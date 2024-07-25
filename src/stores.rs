@@ -1,5 +1,5 @@
 use crate::ids::LogId;
-use crate::{AppendOptions, CreateOptions, EventRecord, IdempotentOutcome};
+use crate::{AppendOptions, CreateOptions, EventRecord};
 use futures_util::Stream;
 use thiserror::Error;
 
@@ -12,6 +12,12 @@ pub mod fake;
 pub enum EventStoreError {
     #[error("log_id={log_id} already has an event_index={event_index}")]
     EventIndexAlreadyExists { log_id: LogId, event_index: u32 },
+    #[error("an event with the provided idempotency key already exists")]
+    IdempotentReplay {
+        idempotency_key: String,
+        log_id: LogId,
+        event_index: u32,
+    },
     #[error("unexpected database error: {error}")]
     DatabaseError {
         error: Box<dyn std::error::Error + Sync + Send>,
@@ -31,10 +37,23 @@ impl PartialEq for EventStoreError {
                     event_index: r_event_index,
                 },
             ) => l_log_id == r_log_id && l_event_index == r_event_index,
+            (
+                Self::IdempotentReplay {
+                    idempotency_key: l_idempotency_key,
+                    log_id: l_log_id,
+                    event_index: l_event_index,
+                },
+                Self::IdempotentReplay {
+                    idempotency_key: r_idempotency_key,
+                    log_id: r_log_id,
+                    event_index: r_event_index,
+                },
+            ) => {
+                l_idempotency_key == r_idempotency_key
+                    && l_log_id == r_log_id
+                    && l_event_index == r_event_index
+            }
             (Self::DatabaseError { error: l_error }, Self::DatabaseError { error: r_error }) => {
-                // strangely, std::error::Error doesn't implement PartialEq,
-                // so the best we can do here is just compare the to_string()
-                // representations for equality
                 l_error.to_string() == r_error.to_string()
             }
             _ => false,
@@ -49,9 +68,10 @@ where
 {
     async fn create(
         &self,
+        log_id: &LogId,
         first_event: &E,
         create_options: &CreateOptions,
-    ) -> Result<(LogId, IdempotentOutcome), EventStoreError>;
+    ) -> Result<(), EventStoreError>;
 
     async fn append(
         &self,
@@ -59,7 +79,7 @@ where
         next_event: &E,
         event_index: u32,
         append_options: &AppendOptions,
-    ) -> Result<IdempotentOutcome, EventStoreError>;
+    ) -> Result<(), EventStoreError>;
 
     async fn load(
         &self,

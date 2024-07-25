@@ -62,6 +62,12 @@ pub enum LogManagerError {
     relevant/necessary, and if so try again"
     )]
     ConcurrentAppend(LogId),
+    #[error("an event with the provided idempotency key already exists")]
+    IdempotentReplay {
+        idempotency_key: String,
+        log_id: LogId,
+        event_index: u32,
+    },
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -74,12 +80,7 @@ pub struct AppendOptions {
     idempotency_key: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum IdempotentOutcome {
-    New,
-    Replay,
-}
-
+#[derive(Debug)]
 pub struct LogManager<E: Send, A: Aggregate<E>, ES: EventStore<E>, AC: AggregationCache<E, A>> {
     event_store: ES,
     aggregation_cache: Arc<AC>,
@@ -118,10 +119,27 @@ where
 
     pub async fn create(
         &self,
+        log_id: &LogId,
         first_event: &E,
         create_options: &CreateOptions,
-    ) -> Result<(LogId, IdempotentOutcome), LogManagerError> {
-        Ok(self.event_store.create(first_event, create_options).await?)
+    ) -> Result<(), LogManagerError> {
+        self.event_store
+            .create(log_id, first_event, create_options)
+            .await
+            .map_err(|e| match e {
+                EventStoreError::IdempotentReplay {
+                    idempotency_key,
+                    log_id,
+                    event_index,
+                } => LogManagerError::IdempotentReplay {
+                    idempotency_key,
+                    log_id,
+                    event_index,
+                },
+                _ => LogManagerError::EventStoreError(e),
+            })?;
+
+        Ok(())
     }
 
     pub async fn reduce(&self, log_id: &LogId) -> Result<Aggregation<E, A>, LogManagerError> {
@@ -160,9 +178,8 @@ where
         aggregation: Aggregation<E, A>,
         next_event: &E,
         append_options: &AppendOptions,
-    ) -> Result<IdempotentOutcome, LogManagerError> {
-        let outcome = self
-            .event_store
+    ) -> Result<(), LogManagerError> {
+        self.event_store
             .append(
                 aggregation.log_id(),
                 next_event,
@@ -171,12 +188,23 @@ where
             )
             .await
             .map_err(|e| match e {
+                // If the event index already exists, there was a concurrent append
+                // and this process lost the race
                 EventStoreError::EventIndexAlreadyExists { log_id: lid, .. } => {
                     LogManagerError::ConcurrentAppend(lid)
                 }
+                EventStoreError::IdempotentReplay {
+                    idempotency_key,
+                    log_id,
+                    event_index,
+                } => LogManagerError::IdempotentReplay {
+                    idempotency_key,
+                    log_id,
+                    event_index,
+                },
                 _ => LogManagerError::EventStoreError(e),
             })?;
-        Ok(outcome)
+        Ok(())
     }
 }
 
@@ -215,8 +243,8 @@ mod tests {
             FakeAggregationCache::<TestEvent, TestAggregate>::new(),
         );
 
-        let (log_id, _) = mgr
-            .create(&TestEvent::Increment, &CreateOptions::default())
+        let log_id = LogId::new();
+        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
 
@@ -235,8 +263,8 @@ mod tests {
             FakeAggregationCache::<TestEvent, TestAggregate>::new_with_notifications(sender),
         );
 
-        let (log_id, _) = mgr
-            .create(&TestEvent::Increment, &CreateOptions::default())
+        let log_id = LogId::new();
+        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
 
@@ -302,23 +330,29 @@ mod tests {
             FakeAggregationCache::<TestEvent, TestAggregate>::new(),
         );
 
+        let log_id = LogId::new();
+        let idempotency_key = Uuid::now_v7().to_string();
         let create_options = CreateOptions {
-            idempotency_key: Some(Uuid::now_v7().to_string()),
+            idempotency_key: Some(idempotency_key.clone()),
             ..Default::default()
         };
-        let (log_id, outcome) = mgr
-            .create(&TestEvent::Increment, &create_options)
-            .await
-            .unwrap();
-        assert_eq!(outcome, IdempotentOutcome::New);
-
-        let (replay_log_id, replay_outcome) = mgr
-            .create(&TestEvent::Increment, &create_options)
+        mgr.create(&log_id, &TestEvent::Increment, &create_options)
             .await
             .unwrap();
 
-        assert_eq!(log_id, replay_log_id);
-        assert_eq!(replay_outcome, IdempotentOutcome::Replay);
+        let replay_log_id = LogId::new();
+        let result = mgr
+            .create(&replay_log_id, &TestEvent::Increment, &create_options)
+            .await;
+
+        assert_eq!(
+            result,
+            Err(LogManagerError::IdempotentReplay {
+                idempotency_key: idempotency_key.clone(),
+                log_id: log_id.clone(), // original log id, not replay
+                event_index: 0
+            })
+        );
     }
 
     #[tokio::test]
@@ -328,13 +362,14 @@ mod tests {
             FakeAggregationCache::<TestEvent, TestAggregate>::new(),
         );
 
-        let (log_id, _) = mgr
-            .create(&TestEvent::Increment, &CreateOptions::default())
+        let log_id = LogId::new();
+        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
 
+        let idempotency_key = Uuid::now_v7().to_string();
         let append_options = AppendOptions {
-            idempotency_key: Some(Uuid::now_v7().to_string()),
+            idempotency_key: Some(idempotency_key.clone()),
             ..Default::default()
         };
 
@@ -350,13 +385,18 @@ mod tests {
         assert_eq!(agg.through_index(), 1);
         assert_eq!(agg.aggregate().count, 0);
 
-        // This should succeed, but be a no-op since an event with the same
-        // idempotency key was already appended above.
-        let outcome = mgr
+        let result = mgr
             .append(agg, &TestEvent::Decrement, &append_options)
-            .await
-            .unwrap();
-        assert_eq!(outcome, IdempotentOutcome::Replay);
+            .await;
+
+        assert_eq!(
+            result,
+            Err(LogManagerError::IdempotentReplay {
+                idempotency_key: idempotency_key.clone(),
+                log_id: log_id.clone(),
+                event_index: 1
+            })
+        );
 
         let agg = mgr.reduce(&log_id).await.unwrap();
         assert_eq!(agg.through_index(), 1);
@@ -370,8 +410,8 @@ mod tests {
             FakeAggregationCache::<TestEvent, TestAggregate>::new(),
         );
 
-        let (log_id, _) = mgr
-            .create(&TestEvent::Increment, &CreateOptions::default())
+        let log_id = LogId::new();
+        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
 
