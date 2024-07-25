@@ -57,9 +57,9 @@ pub enum LogManagerError {
     #[error("the aggregation cache produced an unexpected error: {0}")]
     AggregationCacheError(#[from] AggregationCacheError),
     #[error(
-        "another process already appended another event since your last aggregation; 
-    reduce again to apply the new event, determine if you operation is still 
-    relevant/necessary, and if so try again"
+        "another process already appended another event to log_id={0} 
+        since your last aggregation; reduce again to apply the new event, 
+        determine if you operation is still relevant/necessary, and if so try again"
     )]
     ConcurrentAppend(LogId),
     #[error("an event with the provided idempotency key already exists")]
