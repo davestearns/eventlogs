@@ -74,6 +74,12 @@ pub struct AppendOptions {
     idempotency_key: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum IdempotentOutcome {
+    New,
+    Replay,
+}
+
 pub struct LogManager<E: Send, A: Aggregate<E>, ES: EventStore<E>, AC: AggregationCache<E, A>> {
     event_store: ES,
     aggregation_cache: Arc<AC>,
@@ -155,8 +161,9 @@ where
         aggregation: Aggregation<E, A>,
         next_event: &E,
         append_options: &AppendOptions,
-    ) -> Result<(), LogManagerError> {
-        self.event_store
+    ) -> Result<IdempotentOutcome, LogManagerError> {
+        let outcome = self
+            .event_store
             .append(
                 aggregation.log_id(),
                 next_event,
@@ -170,7 +177,7 @@ where
                 }
                 _ => LogManagerError::EventStoreError(e),
             })?;
-        Ok(())
+        Ok(outcome)
     }
 }
 
@@ -343,9 +350,11 @@ mod tests {
 
         // This should succeed, but be a no-op since an event with the same
         // idempotency key was already appended above.
-        mgr.append(agg, &TestEvent::Decrement, &append_options)
+        let outcome = mgr
+            .append(agg, &TestEvent::Decrement, &append_options)
             .await
             .unwrap();
+        assert_eq!(outcome, IdempotentOutcome::Replay);
 
         let agg = mgr.reduce(&log_id).await.unwrap();
         assert_eq!(agg.through_index(), 1);

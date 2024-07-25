@@ -1,7 +1,7 @@
 use crate::{
     ids::LogId,
     stores::{EventStore, EventStoreError},
-    AppendOptions, CreateOptions, EventRecord,
+    AppendOptions, CreateOptions, EventRecord, IdempotentOutcome,
 };
 use chrono::Utc;
 use const_format::formatcp;
@@ -143,7 +143,7 @@ where
         next_event: &E,
         event_index: u32,
         append_options: &AppendOptions,
-    ) -> Result<(), EventStoreError> {
+    ) -> Result<IdempotentOutcome, EventStoreError> {
         let conn = self.pool.get().await?;
         let stmt = conn.prepare_cached(INSERT_EVENT).await?;
         let result = conn
@@ -158,7 +158,7 @@ where
                 ],
             )
             .await
-            .map(|_| ());
+            .map(|_| IdempotentOutcome::New);
 
         if let Err(ref e) = result {
             if is_duplicate_constraint_error(e, PK_CONSTRAINT) {
@@ -169,7 +169,7 @@ where
             } else if is_duplicate_constraint_error(e, IDEMPOTENCY_KEY_CONSTRAINT) {
                 // if the idempotency key already exists in the database, the
                 // insert was already completed successfully, so just return Ok
-                return Ok(());
+                return Ok(IdempotentOutcome::Replay);
             }
         }
 
@@ -326,10 +326,11 @@ mod tests {
 
         // this should succeed, but be a no-op since an event with
         // the same idempotency key was already inserted above
-        store
+        let outcome = store
             .append(&log_id, &TestEvent::Decrement, 2, &append_options)
             .await
             .unwrap();
+        assert_eq!(outcome, IdempotentOutcome::Replay);
 
         //ensure this log only has 2 events
         let row_stream = store.load(&log_id, 0).await.unwrap();

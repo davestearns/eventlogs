@@ -1,6 +1,6 @@
 use crate::ids::LogId;
 use crate::stores::{EventStore, EventStoreError};
-use crate::{AppendOptions, CreateOptions, EventRecord};
+use crate::{AppendOptions, CreateOptions, EventRecord, IdempotentOutcome};
 use chrono::{DateTime, Utc};
 use futures_util::Stream;
 use std::collections::HashMap;
@@ -107,7 +107,7 @@ where
         next_event: &E,
         event_index: u32,
         append_options: &AppendOptions,
-    ) -> Result<(), EventStoreError> {
+    ) -> Result<IdempotentOutcome, EventStoreError> {
         let mut db = self.mx_db.lock().await;
 
         if db
@@ -125,7 +125,7 @@ where
 
         if let Some(ref key) = append_options.idempotency_key {
             if db.idempotency_key_to_log_id.contains_key(key) {
-                return Ok(());
+                return Ok(IdempotentOutcome::Replay);
             }
             db.idempotency_key_to_log_id
                 .insert(key.clone(), log_id.clone());
@@ -138,7 +138,7 @@ where
         };
 
         db.log_id_to_events.get_mut(log_id).unwrap().push(record);
-        Ok(())
+        Ok(IdempotentOutcome::New)
     }
 
     async fn load(
@@ -256,10 +256,17 @@ mod tests {
             idempotency_key: Some(Uuid::now_v7().to_string()),
         };
 
-        store.append(&log_id, &TestEvent::Decrement, 1, &append_options).await.unwrap();
+        store
+            .append(&log_id, &TestEvent::Decrement, 1, &append_options)
+            .await
+            .unwrap();
         // This should succeed, but be a no-op since a previous event was already appended
         // with the same idempotency key...
-        store.append(&log_id, &TestEvent::Decrement, 2, &append_options).await.unwrap();
+        let outcome = store
+            .append(&log_id, &TestEvent::Decrement, 2, &append_options)
+            .await
+            .unwrap();
+        assert_eq!(outcome, IdempotentOutcome::Replay);
 
         // ...and there should only be 2 events in the log
         let row_stream = store.load(&log_id, 0).await.unwrap();

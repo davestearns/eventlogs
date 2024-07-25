@@ -1,5 +1,5 @@
 use crate::ids::LogId;
-use crate::{AppendOptions, CreateOptions, EventRecord};
+use crate::{AppendOptions, CreateOptions, EventRecord, IdempotentOutcome};
 use futures_util::Stream;
 use thiserror::Error;
 
@@ -59,7 +59,7 @@ where
         next_event: &E,
         event_index: u32,
         append_options: &AppendOptions,
-    ) -> Result<(), EventStoreError>;
+    ) -> Result<IdempotentOutcome, EventStoreError>;
 
     async fn load(
         &self,
