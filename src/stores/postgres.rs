@@ -62,9 +62,12 @@ impl<'a> FromSql<'a> for LogId {
     }
 }
 
+pub trait PostgresEvent: Serialize + DeserializeOwned + Debug + Send + Sync {}
+impl<T> PostgresEvent for T where T: Serialize + DeserializeOwned + Debug + Send + Sync {}
+
 impl<E> EventRecord<E> for Row
 where
-    E: Serialize + DeserializeOwned + Debug + Send,
+    E: PostgresEvent,
 {
     fn index(&self) -> u32 {
         self.get("event_index")
@@ -86,7 +89,7 @@ pub struct PostgresEventStore<E> {
 
 impl<E> PostgresEventStore<E>
 where
-    E: Serialize + DeserializeOwned + Debug + Send + Sync,
+    E: PostgresEvent,
 {
     pub fn new(pool: Pool) -> Self {
         PostgresEventStore {
@@ -154,7 +157,7 @@ where
 
 impl<E> EventStore<E> for PostgresEventStore<E>
 where
-    E: Serialize + DeserializeOwned + Debug + Send + Sync,
+    E: PostgresEvent,
 {
     async fn create(
         &self,

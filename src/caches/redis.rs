@@ -43,7 +43,21 @@ impl ToRedisArgs for LogId {
     }
 }
 
-pub struct RedisAggregationCache<E, A: Aggregate<E>> {
+pub trait RedisAggregateEvent: Send + Sync {}
+impl<T> RedisAggregateEvent for T where T: Send + Sync {}
+
+pub trait RedisAggregate<E: RedisAggregateEvent>:
+    Aggregate<E> + Send + Sync + Serialize + DeserializeOwned
+{
+}
+impl<E, T> RedisAggregate<E> for T
+where
+    E: RedisAggregateEvent,
+    T: Aggregate<E> + Send + Sync + Serialize + DeserializeOwned,
+{
+}
+
+pub struct RedisAggregationCache<E: RedisAggregateEvent, A: RedisAggregate<E>> {
     pool: Pool,
     maybe_ttl_secs: Option<u32>,
     _phantom_e: PhantomData<E>,
@@ -52,8 +66,8 @@ pub struct RedisAggregationCache<E, A: Aggregate<E>> {
 
 impl<E, A> RedisAggregationCache<E, A>
 where
-    E: Send,
-    A: Aggregate<E> + Send,
+    E: RedisAggregateEvent,
+    A: RedisAggregate<E>,
 {
     pub fn new(pool: Pool, ttl_secs: Option<u32>) -> Self {
         Self {
@@ -68,7 +82,7 @@ where
 impl<E, A> AggregationCache<E, A> for RedisAggregationCache<E, A>
 where
     E: Send + Sync,
-    A: Aggregate<E> + Send + Sync + Serialize + DeserializeOwned,
+    A: RedisAggregate<E>,
 {
     async fn put(&self, aggregation: &Aggregation<E, A>) -> Result<(), AggregationCacheError> {
         let mut conn = self.pool.get().await?;
