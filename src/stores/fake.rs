@@ -78,13 +78,13 @@ where
         &self,
         first_event: &E,
         create_options: &CreateOptions,
-    ) -> Result<LogId, EventStoreError> {
+    ) -> Result<(LogId, IdempotentOutcome), EventStoreError> {
         let log_id = LogId::new();
         let mut db = self.mx_db.lock().await;
 
         if let Some(ref key) = create_options.idempotency_key {
             if let Some(lid) = db.idempotency_key_to_log_id.get(key) {
-                return Ok(lid.clone());
+                return Ok((lid.clone(), IdempotentOutcome::Replay));
             }
             db.idempotency_key_to_log_id
                 .insert(key.clone(), log_id.clone());
@@ -98,7 +98,7 @@ where
 
         db.log_id_to_events.insert(log_id.clone(), vec![record]);
 
-        Ok(log_id)
+        Ok((log_id, IdempotentOutcome::New))
     }
 
     async fn append(
@@ -173,7 +173,7 @@ mod tests {
     #[tokio::test]
     async fn create_load() {
         let store = FakeEventStore::<TestEvent>::new();
-        let log_id = store
+        let (log_id, _) = store
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
@@ -184,7 +184,7 @@ mod tests {
     #[tokio::test]
     async fn create_append_load() {
         let store = FakeEventStore::<TestEvent>::new();
-        let log_id = store
+        let (log_id, _) = store
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
@@ -205,23 +205,25 @@ mod tests {
             idempotency_key: Some(Uuid::now_v7().to_string()),
         };
 
-        let log_id = store
+        let (log_id, outcome) = store
+            .create(&TestEvent::Increment, &create_options)
+            .await
+            .unwrap();
+        assert_eq!(outcome, IdempotentOutcome::New);
+
+        let (replay_log_id, replay_outcome) = store
             .create(&TestEvent::Increment, &create_options)
             .await
             .unwrap();
 
-        let idempotent_log_id = store
-            .create(&TestEvent::Increment, &create_options)
-            .await
-            .unwrap();
-
-        assert_eq!(idempotent_log_id, log_id);
+        assert_eq!(replay_log_id, log_id);
+        assert_eq!(replay_outcome, IdempotentOutcome::Replay);
     }
 
     #[tokio::test]
     async fn concurrent_append() {
         let store = FakeEventStore::<TestEvent>::new();
-        let log_id = store
+        let (log_id, _) = store
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
@@ -247,7 +249,7 @@ mod tests {
     #[tokio::test]
     async fn idempotent_append() {
         let store = FakeEventStore::<TestEvent>::new();
-        let log_id = store
+        let (log_id, _) = store
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();

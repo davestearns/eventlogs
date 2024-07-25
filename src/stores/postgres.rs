@@ -102,7 +102,7 @@ where
         &self,
         first_event: &E,
         create_options: &CreateOptions,
-    ) -> Result<LogId, EventStoreError> {
+    ) -> Result<(LogId, IdempotentOutcome), EventStoreError> {
         let log_id = LogId::new();
         let conn = self.pool.get().await?;
         let stmt = conn.prepare_cached(INSERT_EVENT).await?;
@@ -118,8 +118,7 @@ where
                     &Json(first_event),
                 ],
             )
-            .await
-            .map(|_| log_id);
+            .await;
 
         if let Err(ref e) = result {
             if is_duplicate_constraint_error(e, IDEMPOTENCY_KEY_CONSTRAINT) {
@@ -129,12 +128,12 @@ where
                         .await?;
                     let row = conn.query_one(&stmt, &[key]).await?;
                     let prev_log_id: LogId = row.get("log_id");
-                    return Ok(prev_log_id);
+                    return Ok((prev_log_id, IdempotentOutcome::Replay));
                 }
             }
         }
 
-        Ok(result?)
+        Ok(result.map(|_| (log_id, IdempotentOutcome::New))?)
     }
 
     async fn append(
@@ -229,7 +228,7 @@ mod tests {
     #[tokio::test]
     async fn create_load() {
         let store = store();
-        let log_id = store
+        let (log_id, _) = store
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
@@ -241,7 +240,7 @@ mod tests {
     #[tokio::test]
     async fn create_append_load() {
         let store = store();
-        let log_id = store
+        let (log_id, _) = store
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
@@ -268,22 +267,25 @@ mod tests {
             ..Default::default()
         };
 
-        let first_log_id = store
+        let (first_log_id, outcome) = store
             .create(&TestEvent::Increment, &create_options)
             .await
             .unwrap();
-        let second_log_id = store
+        assert_eq!(outcome, IdempotentOutcome::New);
+
+        let (replay_log_id, replay_outcome) = store
             .create(&TestEvent::Increment, &create_options)
             .await
             .unwrap();
 
-        assert_eq!(first_log_id, second_log_id);
+        assert_eq!(first_log_id, replay_log_id);
+        assert_eq!(replay_outcome, IdempotentOutcome::Replay);
     }
 
     #[tokio::test]
     async fn concurrent_append() {
         let store = store();
-        let log_id = store
+        let (log_id, _) = store
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
@@ -314,7 +316,7 @@ mod tests {
             ..Default::default()
         };
 
-        let log_id = store
+        let (log_id, _) = store
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();

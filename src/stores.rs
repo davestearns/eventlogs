@@ -51,7 +51,7 @@ where
         &self,
         first_event: &E,
         create_options: &CreateOptions,
-    ) -> Result<LogId, EventStoreError>;
+    ) -> Result<(LogId, IdempotentOutcome), EventStoreError>;
 
     async fn append(
         &self,

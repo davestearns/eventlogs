@@ -120,9 +120,8 @@ where
         &self,
         first_event: &E,
         create_options: &CreateOptions,
-    ) -> Result<LogId, LogManagerError> {
-        let log_id = self.event_store.create(first_event, create_options).await?;
-        Ok(log_id)
+    ) -> Result<(LogId, IdempotentOutcome), LogManagerError> {
+        Ok(self.event_store.create(first_event, create_options).await?)
     }
 
     pub async fn reduce(&self, log_id: &LogId) -> Result<Aggregation<E, A>, LogManagerError> {
@@ -216,7 +215,7 @@ mod tests {
             FakeAggregationCache::<TestEvent, TestAggregate>::new(),
         );
 
-        let log_id = mgr
+        let (log_id, _) = mgr
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
@@ -236,7 +235,7 @@ mod tests {
             FakeAggregationCache::<TestEvent, TestAggregate>::new_with_notifications(sender),
         );
 
-        let log_id = mgr
+        let (log_id, _) = mgr
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
@@ -307,16 +306,19 @@ mod tests {
             idempotency_key: Some(Uuid::now_v7().to_string()),
             ..Default::default()
         };
-        let log_id = mgr
+        let (log_id, outcome) = mgr
             .create(&TestEvent::Increment, &create_options)
             .await
             .unwrap();
-        let idempotent_log_id = mgr
+        assert_eq!(outcome, IdempotentOutcome::New);
+
+        let (replay_log_id, replay_outcome) = mgr
             .create(&TestEvent::Increment, &create_options)
             .await
             .unwrap();
 
-        assert_eq!(log_id, idempotent_log_id);
+        assert_eq!(log_id, replay_log_id);
+        assert_eq!(replay_outcome, IdempotentOutcome::Replay);
     }
 
     #[tokio::test]
@@ -326,7 +328,7 @@ mod tests {
             FakeAggregationCache::<TestEvent, TestAggregate>::new(),
         );
 
-        let log_id = mgr
+        let (log_id, _) = mgr
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
@@ -368,7 +370,7 @@ mod tests {
             FakeAggregationCache::<TestEvent, TestAggregate>::new(),
         );
 
-        let log_id = mgr
+        let (log_id, _) = mgr
             .create(&TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
