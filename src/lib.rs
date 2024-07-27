@@ -24,15 +24,14 @@ pub trait Aggregate<E>: Default {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Aggregation<E, A: Aggregate<E>> {
+pub struct Aggregation<A> {
     log_id: LogId,
     reduced_at: DateTime<Utc>,
     through_index: u32,
     aggregate: A,
-    _phantom_e: PhantomData<E>,
 }
 
-impl<E, A: Aggregate<E>> Aggregation<E, A> {
+impl<A> Aggregation<A> {
     pub fn log_id(&self) -> &LogId {
         &self.log_id
     }
@@ -81,10 +80,11 @@ pub struct AppendOptions {
 }
 
 #[derive(Debug)]
-pub struct LogManager<E: Send, A: Aggregate<E>, ES: EventStore<E>, AC: AggregationCache<E, A>> {
+pub struct LogManager<E: Send, A: Aggregate<E>, ES: EventStore<E>, AC: AggregationCache<A>> {
     event_store: ES,
     aggregation_cache: Arc<AC>,
-    aggregation_sender: Sender<Aggregation<E, A>>,
+    aggregation_sender: Sender<Aggregation<A>>,
+    _phantom_e: PhantomData<E>,
 }
 
 impl<E, A, ES, AC> LogManager<E, A, ES, AC>
@@ -92,12 +92,12 @@ where
     E: Send + Clone + 'static,
     A: Aggregate<E> + Send + Clone + 'static,
     ES: EventStore<E>,
-    AC: AggregationCache<E, A> + Send + Sync + 'static,
+    AC: AggregationCache<A> + Send + Sync + 'static,
 {
     pub fn new(event_store: ES, aggregation_cache: AC) -> Self {
         let cache_arc = Arc::new(aggregation_cache);
         let cloned_cache_arc = cache_arc.clone();
-        let (sender, mut receiver) = mpsc::channel::<Aggregation<E, A>>(1024);
+        let (sender, mut receiver) = mpsc::channel::<Aggregation<A>>(1024);
 
         // Spawn a background task that reads from the aggregation receiver channel
         // and updates the aggregation cache. This is used to update the cache asynchronously
@@ -114,6 +114,7 @@ where
             event_store,
             aggregation_cache: cache_arc,
             aggregation_sender: sender,
+            _phantom_e: PhantomData,
         }
     }
 
@@ -142,7 +143,7 @@ where
         Ok(())
     }
 
-    pub async fn reduce(&self, log_id: &LogId) -> Result<Aggregation<E, A>, LogManagerError> {
+    pub async fn reduce(&self, log_id: &LogId) -> Result<Aggregation<A>, LogManagerError> {
         let maybe_aggregation = self.aggregation_cache.get(log_id).await?;
         let (mut aggregate, starting_index) = maybe_aggregation
             .map(|re| (re.aggregate, re.through_index + 1))
@@ -162,8 +163,7 @@ where
             log_id: log_id.clone(),
             reduced_at: Utc::now(),
             through_index,
-            aggregate,
-            _phantom_e: PhantomData,
+            aggregate
         };
 
         // try to send the aggregation, but ignore errors since this is really
@@ -175,7 +175,7 @@ where
 
     pub async fn append(
         &self,
-        aggregation: Aggregation<E, A>,
+        aggregation: Aggregation<A>,
         next_event: &E,
         append_options: &AppendOptions,
     ) -> Result<(), LogManagerError> {
@@ -240,7 +240,7 @@ mod tests {
     async fn create_reduce() {
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestEvent, TestAggregate>::new(),
+            FakeAggregationCache::<TestAggregate>::new(),
         );
 
         let log_id = LogId::new();
@@ -257,10 +257,10 @@ mod tests {
     #[tokio::test]
     async fn cached_reduction_gets_used() {
         let (sender, mut receiver) =
-            tokio::sync::mpsc::channel::<FakeAggregationCacheOp<TestEvent, TestAggregate>>(64);
+            tokio::sync::mpsc::channel::<FakeAggregationCacheOp<TestAggregate>>(64);
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestEvent, TestAggregate>::new_with_notifications(sender),
+            FakeAggregationCache::<TestAggregate>::new_with_notifications(sender),
         );
 
         let log_id = LogId::new();
@@ -327,7 +327,7 @@ mod tests {
     async fn idempotent_create() {
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestEvent, TestAggregate>::new(),
+            FakeAggregationCache::<TestAggregate>::new(),
         );
 
         let log_id = LogId::new();
@@ -359,7 +359,7 @@ mod tests {
     async fn idempotent_append() {
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestEvent, TestAggregate>::new(),
+            FakeAggregationCache::<TestAggregate>::new(),
         );
 
         let log_id = LogId::new();
@@ -407,7 +407,7 @@ mod tests {
     async fn concurrent_append() {
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestEvent, TestAggregate>::new(),
+            FakeAggregationCache::<TestAggregate>::new(),
         );
 
         let log_id = LogId::new();

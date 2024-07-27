@@ -1,4 +1,4 @@
-use crate::{ids::LogId, Aggregate, Aggregation};
+use crate::{ids::LogId, Aggregation};
 use thiserror::Error;
 
 pub mod redis;
@@ -32,12 +32,8 @@ impl PartialEq for AggregationCacheError {
 }
 
 #[trait_variant::make(Send)]
-pub trait AggregationCache<E, A>
-where
-    A: Aggregate<E>,
-{
-    async fn put(&self, aggregation: &Aggregation<E, A>) -> Result<(), AggregationCacheError>;
+pub trait AggregationCache<A> {
+    async fn put(&self, aggregation: &Aggregation<A>) -> Result<(), AggregationCacheError>;
 
-    async fn get(&self, log_id: &LogId)
-        -> Result<Option<Aggregation<E, A>>, AggregationCacheError>;
+    async fn get(&self, log_id: &LogId) -> Result<Option<Aggregation<A>>, AggregationCacheError>;
 }

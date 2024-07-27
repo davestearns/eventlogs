@@ -1,14 +1,13 @@
 use crate::{
     caches::{AggregationCache, AggregationCacheError},
     ids::LogId,
-    Aggregate, Aggregation,
+    Aggregation,
 };
 use deadpool_redis::{
     redis::{self, RedisError, ToRedisArgs},
     Pool, PoolError,
 };
 use serde::{de::DeserializeOwned, Serialize};
-use std::marker::PhantomData;
 
 impl From<PoolError> for AggregationCacheError {
     fn from(value: PoolError) -> Self {
@@ -43,48 +42,25 @@ impl ToRedisArgs for LogId {
     }
 }
 
-pub trait RedisAggregateEvent: Send + Sync {}
-impl<T> RedisAggregateEvent for T where T: Send + Sync {}
-
-pub trait RedisAggregate<E: RedisAggregateEvent>:
-    Aggregate<E> + Send + Sync + Serialize + DeserializeOwned
-{
-}
-impl<E, T> RedisAggregate<E> for T
-where
-    E: RedisAggregateEvent,
-    T: Aggregate<E> + Send + Sync + Serialize + DeserializeOwned,
-{
-}
-
-pub struct RedisAggregationCache<E: RedisAggregateEvent, A: RedisAggregate<E>> {
+pub struct RedisAggregationCache {
     pool: Pool,
     maybe_ttl_secs: Option<u32>,
-    _phantom_e: PhantomData<E>,
-    _phantom_a: PhantomData<A>,
 }
 
-impl<E, A> RedisAggregationCache<E, A>
-where
-    E: RedisAggregateEvent,
-    A: RedisAggregate<E>,
-{
+impl RedisAggregationCache {
     pub fn new(pool: Pool, ttl_secs: Option<u32>) -> Self {
         Self {
             pool,
             maybe_ttl_secs: ttl_secs,
-            _phantom_e: PhantomData,
-            _phantom_a: PhantomData,
         }
     }
 }
 
-impl<E, A> AggregationCache<E, A> for RedisAggregationCache<E, A>
+impl<A> AggregationCache<A> for RedisAggregationCache
 where
-    E: Send + Sync,
-    A: RedisAggregate<E>,
+    A: Send + Sync + Serialize + DeserializeOwned,
 {
-    async fn put(&self, aggregation: &Aggregation<E, A>) -> Result<(), AggregationCacheError> {
+    async fn put(&self, aggregation: &Aggregation<A>) -> Result<(), AggregationCacheError> {
         let mut conn = self.pool.get().await?;
         let serialized = rmp_serde::to_vec(aggregation)?;
         let mut cmd = redis::cmd("SET");
@@ -98,10 +74,7 @@ where
         Ok(())
     }
 
-    async fn get(
-        &self,
-        log_id: &LogId,
-    ) -> Result<Option<Aggregation<E, A>>, AggregationCacheError> {
+    async fn get(&self, log_id: &LogId) -> Result<Option<Aggregation<A>>, AggregationCacheError> {
         let mut conn = self.pool.get().await?;
         let mut cmd = redis::cmd("GET");
         cmd.arg(log_id);
@@ -121,13 +94,13 @@ where
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
-    use crate::tests::{TestAggregate, TestEvent};
+    use crate::tests::TestAggregate;
     use chrono::Utc;
     use deadpool_redis::{Config, Runtime};
 
     use super::*;
 
-    fn cache() -> RedisAggregationCache<TestEvent, TestAggregate> {
+    fn cache() -> RedisAggregationCache {
         let cgf = Config::from_url("redis://localhost");
         let pool = cgf.create_pool(Some(Runtime::Tokio1)).unwrap();
         RedisAggregationCache::new(pool, None)
@@ -144,7 +117,6 @@ mod tests {
             reduced_at: Utc::now(),
             through_index: 1,
             aggregate: test_aggregate,
-            _phantom_e: PhantomData,
         };
 
         cache.put(&aggregation).await.unwrap();
@@ -155,7 +127,8 @@ mod tests {
     #[tokio::test]
     async fn get_not_found() {
         let cache = cache();
-        let maybe_aggregation = cache.get(&LogId::new()).await.unwrap();
+        let maybe_aggregation: Option<Aggregation<TestAggregate>> =
+            cache.get(&LogId::new()).await.unwrap();
         assert_eq!(maybe_aggregation, None);
     }
 }

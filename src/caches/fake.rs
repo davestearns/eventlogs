@@ -1,36 +1,36 @@
 use crate::{
     caches::{AggregationCache, AggregationCacheError},
     ids::LogId,
-    Aggregate, Aggregation,
+    Aggregation,
 };
 use std::collections::HashMap;
 use tokio::sync::{mpsc::Sender, Mutex};
 
 #[derive(Debug, PartialEq)]
-pub enum FakeAggregationCacheOp<E, A: Aggregate<E> + Clone + Send + Sync> {
+pub enum FakeAggregationCacheOp<A: Clone + Send + Sync> {
     Get {
         log_id: LogId,
-        response: Option<Aggregation<E, A>>,
+        response: Option<Aggregation<A>>,
     },
     Put {
-        aggregation: Aggregation<E, A>,
+        aggregation: Aggregation<A>,
     },
 }
 
 #[derive(Debug)]
-struct DB<E, A: Aggregate<E> + Clone + Sync + Send> {
-    table: HashMap<LogId, Aggregation<E, A>>,
-    op_sender: Option<Sender<FakeAggregationCacheOp<E, A>>>,
+struct DB<A: Clone + Sync + Send> {
+    table: HashMap<LogId, Aggregation<A>>,
+    op_sender: Option<Sender<FakeAggregationCacheOp<A>>>,
 }
 
 #[derive(Debug)]
-pub struct FakeAggregationCache<E, A: Aggregate<E> + Clone + Send + Sync> {
-    mx_db: Mutex<DB<E, A>>,
+pub struct FakeAggregationCache<A: Clone + Send + Sync> {
+    mx_db: Mutex<DB<A>>,
 }
 
-impl<E, A> FakeAggregationCache<E, A>
+impl<A> FakeAggregationCache<A>
 where
-    A: Aggregate<E> + Clone + Sync + Send,
+    A: Clone + Sync + Send,
 {
     pub fn new() -> Self {
         Self {
@@ -41,7 +41,7 @@ where
         }
     }
 
-    pub fn new_with_notifications(op_sender: Sender<FakeAggregationCacheOp<E, A>>) -> Self {
+    pub fn new_with_notifications(op_sender: Sender<FakeAggregationCacheOp<A>>) -> Self {
         Self {
             mx_db: Mutex::new(DB {
                 table: HashMap::new(),
@@ -56,21 +56,20 @@ where
     }
 }
 
-impl<E, A> Default for FakeAggregationCache<E, A>
+impl<A> Default for FakeAggregationCache<A>
 where
-    A: Aggregate<E> + Clone + Sync + Send,
+    A: Clone + Sync + Send,
 {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<E, A> AggregationCache<E, A> for FakeAggregationCache<E, A>
+impl<A> AggregationCache<A> for FakeAggregationCache<A>
 where
-    E: Sync + Send + Clone,
-    A: Aggregate<E> + Clone + Sync + Send,
+    A: Clone + Sync + Send,
 {
-    async fn put(&self, aggregation: &Aggregation<E, A>) -> Result<(), AggregationCacheError> {
+    async fn put(&self, aggregation: &Aggregation<A>) -> Result<(), AggregationCacheError> {
         let mut db = self.mx_db.lock().await;
 
         db.table
@@ -88,10 +87,7 @@ where
         Ok(())
     }
 
-    async fn get(
-        &self,
-        log_id: &LogId,
-    ) -> Result<Option<Aggregation<E, A>>, AggregationCacheError> {
+    async fn get(&self, log_id: &LogId) -> Result<Option<Aggregation<A>>, AggregationCacheError> {
         let db = self.mx_db.lock().await;
 
         let maybe_aggregation = db.table.get(log_id).cloned();
