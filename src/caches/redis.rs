@@ -4,10 +4,12 @@ use crate::{
     Aggregation,
 };
 use deadpool_redis::{
-    redis::{self, RedisError, ToRedisArgs},
+    redis::{self, AsyncCommands, RedisError, ToRedisArgs},
     Pool, PoolError,
 };
 use serde::{de::DeserializeOwned, Serialize};
+
+use super::AggregationCacheSerde;
 
 impl From<PoolError> for AggregationCacheError {
     fn from(value: PoolError) -> Self {
@@ -21,18 +23,6 @@ impl From<RedisError> for AggregationCacheError {
     }
 }
 
-impl From<rmp_serde::encode::Error> for AggregationCacheError {
-    fn from(value: rmp_serde::encode::Error) -> Self {
-        Self::EncodingFailure(Box::new(value))
-    }
-}
-
-impl From<rmp_serde::decode::Error> for AggregationCacheError {
-    fn from(value: rmp_serde::decode::Error) -> Self {
-        Self::DecodingFailure(Box::new(value))
-    }
-}
-
 impl ToRedisArgs for LogId {
     fn write_redis_args<W>(&self, out: &mut W)
     where
@@ -42,51 +32,62 @@ impl ToRedisArgs for LogId {
     }
 }
 
-pub struct RedisAggregationCache {
+pub struct RedisAggregationCache<S> {
     pool: Pool,
+    serde: S,
     maybe_ttl_secs: Option<u32>,
 }
 
-impl RedisAggregationCache {
-    pub fn new(pool: Pool, ttl_secs: Option<u32>) -> Self {
+impl<S> RedisAggregationCache<S> {
+    pub fn new(pool: Pool, serde: S, ttl_secs: Option<u32>) -> Self {
         Self {
             pool,
+            serde,
             maybe_ttl_secs: ttl_secs,
         }
     }
 }
 
-impl<A> AggregationCache<A> for RedisAggregationCache
+impl<A, S> AggregationCache<A> for RedisAggregationCache<S>
 where
     A: Send + Sync + Serialize + DeserializeOwned,
+    S: AggregationCacheSerde<A> + Send + Sync,
 {
     async fn put(&self, aggregation: &Aggregation<A>) -> Result<(), AggregationCacheError> {
+        let serialized = self
+            .serde
+            .serialize(aggregation)
+            .map_err(AggregationCacheError::EncodingFailure)?;
+
         let mut conn = self.pool.get().await?;
-        let serialized = rmp_serde::to_vec(aggregation)?;
-        let mut cmd = redis::cmd("SET");
-        cmd.arg(aggregation.log_id());
-        cmd.arg(serialized);
         if let Some(ttl_secs) = self.maybe_ttl_secs {
-            cmd.arg("EX");
-            cmd.arg(ttl_secs);
+            conn.set_ex(aggregation.log_id(), &serialized, ttl_secs as u64)
+                .await?;
+        } else {
+            conn.set(aggregation.log_id(), &serialized).await?;
         }
-        cmd.query_async(&mut conn).await?;
+
         Ok(())
     }
 
     async fn get(&self, log_id: &LogId) -> Result<Option<Aggregation<A>>, AggregationCacheError> {
         let mut conn = self.pool.get().await?;
-        let mut cmd = redis::cmd("GET");
-        cmd.arg(log_id);
-        if let Some(ttl_secs) = self.maybe_ttl_secs {
-            cmd.arg("EX");
-            cmd.arg(ttl_secs);
-        }
 
-        let maybe_bytes: Option<Vec<u8>> = cmd.query_async(&mut conn).await?;
-        match maybe_bytes {
-            None => Ok(None),
-            Some(bytes) => Ok(rmp_serde::from_slice(&bytes)?),
+        let maybe_bytes: Option<Vec<u8>> = if let Some(ttl_secs) = self.maybe_ttl_secs {
+            conn.get_ex(log_id, redis::Expiry::EX(ttl_secs as usize))
+                .await?
+        } else {
+            conn.get(log_id).await?
+        };
+
+        if let Some(buf) = maybe_bytes {
+            let aggregation: Aggregation<A> = self
+                .serde
+                .deserialize(&buf)
+                .map_err(AggregationCacheError::DecodingFailure)?;
+            Ok(Some(aggregation))
+        } else {
+            Ok(None)
         }
     }
 }
@@ -94,16 +95,32 @@ where
 #[cfg(test)]
 #[allow(dead_code)]
 mod tests {
+    use std::error::Error;
+
     use crate::tests::TestAggregate;
     use chrono::Utc;
     use deadpool_redis::{Config, Runtime};
 
     use super::*;
 
-    fn cache() -> RedisAggregationCache {
+    struct JsonSerde;
+    impl AggregationCacheSerde<TestAggregate> for JsonSerde {
+        fn serialize(
+            &self,
+            aggregation: &Aggregation<TestAggregate>,
+        ) -> Result<Vec<u8>, Box<dyn Error>> {
+            Ok(serde_json::to_vec(aggregation)?)
+        }
+
+        fn deserialize(&self, buf: &[u8]) -> Result<Aggregation<TestAggregate>, Box<dyn Error>> {
+            Ok(serde_json::from_slice(buf)?)
+        }
+    }
+
+    fn cache() -> RedisAggregationCache<JsonSerde> {
         let cgf = Config::from_url("redis://localhost");
         let pool = cgf.create_pool(Some(Runtime::Tokio1)).unwrap();
-        RedisAggregationCache::new(pool, None)
+        RedisAggregationCache::new(pool, JsonSerde, None)
     }
 
     #[tokio::test]

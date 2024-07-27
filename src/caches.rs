@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use crate::{ids::LogId, Aggregation};
 use thiserror::Error;
 
@@ -34,6 +36,10 @@ impl PartialEq for AggregationCacheError {
 #[trait_variant::make(Send)]
 pub trait AggregationCache<A> {
     async fn put(&self, aggregation: &Aggregation<A>) -> Result<(), AggregationCacheError>;
-
     async fn get(&self, log_id: &LogId) -> Result<Option<Aggregation<A>>, AggregationCacheError>;
+}
+
+pub trait AggregationCacheSerde<A> {
+    fn serialize(&self, aggregation: &Aggregation<A>) -> Result<Vec<u8>, Box<dyn Error>>;
+    fn deserialize(&self, buf: &[u8]) -> Result<Aggregation<A>, Box<dyn Error>>;
 }
