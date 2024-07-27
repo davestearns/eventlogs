@@ -19,8 +19,9 @@ pub trait EventRecord<E> {
     fn event(&self) -> E;
 }
 
-pub trait Aggregate<E>: Default {
-    fn apply(&mut self, event_record: &impl EventRecord<E>);
+pub trait Aggregate: Default {
+    type Event;
+    fn apply(&mut self, event_record: &impl EventRecord<Self::Event>);
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -90,7 +91,7 @@ pub struct LogManager<E, A, ES, AC> {
 impl<E, A, ES, AC> LogManager<E, A, ES, AC>
 where
     E: Send + 'static,
-    A: Aggregate<E> + Send + Clone + 'static,
+    A: Aggregate<Event = E> + Send + Clone + 'static,
     ES: EventStore<E>,
     AC: AggregationCache<A> + Send + Sync + 'static,
 {
@@ -163,7 +164,7 @@ where
             log_id: log_id.clone(),
             reduced_at: Utc::now(),
             through_index,
-            aggregate
+            aggregate,
         };
 
         // try to send the aggregation, but ignore errors since this is really
@@ -227,8 +228,10 @@ mod tests {
         pub count: i32,
     }
 
-    impl Aggregate<TestEvent> for TestAggregate {
-        fn apply(&mut self, event_record: &impl crate::EventRecord<TestEvent>) {
+    impl Aggregate for TestAggregate {
+        type Event = TestEvent;
+
+        fn apply(&mut self, event_record: &impl EventRecord<TestEvent>) {
             match event_record.event() {
                 TestEvent::Increment => self.count += 1,
                 TestEvent::Decrement => self.count -= 1,
