@@ -89,7 +89,7 @@ pub struct LogManager<E: Send, A: Aggregate<E>, ES: EventStore<E>, AC: Aggregati
 
 impl<E, A, ES, AC> LogManager<E, A, ES, AC>
 where
-    E: Send + Clone + 'static,
+    E: Send + 'static,
     A: Aggregate<E> + Send + Clone + 'static,
     ES: EventStore<E>,
     AC: AggregationCache<A> + Send + Sync + 'static,
