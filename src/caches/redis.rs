@@ -57,7 +57,7 @@ where
         let serialized = self
             .serde
             .serialize(aggregation)
-            .map_err(AggregationCacheError::EncodingFailure)?;
+            .map_err(|e| AggregationCacheError::EncodingFailure(Box::new(e)))?;
 
         let mut conn = self.pool.get().await?;
         if let Some(ttl_secs) = self.maybe_ttl_secs {
@@ -84,7 +84,7 @@ where
             let aggregation: Aggregation<A> = self
                 .serde
                 .deserialize(&buf)
-                .map_err(AggregationCacheError::DecodingFailure)?;
+                .map_err(|e| AggregationCacheError::DecodingFailure(Box::new(e)))?;
             Ok(Some(aggregation))
         } else {
             Ok(None)
@@ -108,12 +108,12 @@ mod tests {
         fn serialize(
             &self,
             aggregation: &Aggregation<TestAggregate>,
-        ) -> Result<Vec<u8>, Box<dyn Error>> {
-            Ok(serde_json::to_vec(aggregation)?)
+        ) -> Result<Vec<u8>, impl Error + 'static> {
+            serde_json::to_vec(aggregation)
         }
 
-        fn deserialize(&self, buf: &[u8]) -> Result<Aggregation<TestAggregate>, Box<dyn Error>> {
-            Ok(serde_json::from_slice(buf)?)
+        fn deserialize(&self, buf: &[u8]) -> Result<Aggregation<TestAggregate>, impl Error + 'static> {
+            serde_json::from_slice(buf)
         }
     }
 

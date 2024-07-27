@@ -40,6 +40,6 @@ pub trait AggregationCache<A> {
 }
 
 pub trait AggregationCacheSerde<A> {
-    fn serialize(&self, aggregation: &Aggregation<A>) -> Result<Vec<u8>, Box<dyn Error>>;
-    fn deserialize(&self, buf: &[u8]) -> Result<Aggregation<A>, Box<dyn Error>>;
+    fn serialize(&self, aggregation: &Aggregation<A>) -> Result<Vec<u8>, impl Error + 'static>;
+    fn deserialize(&self, buf: &[u8]) -> Result<Aggregation<A>, impl Error + 'static>;
 }
