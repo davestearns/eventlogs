@@ -8,7 +8,7 @@ use const_format::formatcp;
 use deadpool_postgres::{GenericClient, Pool, PoolError};
 use futures_util::TryStreamExt;
 use serde::{de::DeserializeOwned, Serialize};
-use std::{fmt::Debug, marker::PhantomData};
+use std::fmt::Debug;
 use tokio_postgres::{
     error::SqlState,
     types::{FromSql, Json, ToSql, Type},
@@ -82,29 +82,25 @@ where
     }
 }
 
-pub struct PostgresEventStore<E> {
+pub struct PostgresEventStore {
     pool: Pool,
-    _phantom_e: PhantomData<E>,
 }
 
-impl<E> PostgresEventStore<E>
-where
-    E: PostgresEvent,
-{
+impl PostgresEventStore {
     pub fn new(pool: Pool) -> Self {
-        PostgresEventStore {
-            pool,
-            _phantom_e: PhantomData,
-        }
+        PostgresEventStore { pool }
     }
 
-    async fn insert(
+    async fn insert<E>(
         &self,
         log_id: &LogId,
         event: &E,
         event_index: u32,
         idempotency_key: &Option<String>,
-    ) -> Result<(), EventStoreError> {
+    ) -> Result<(), EventStoreError>
+    where
+        E: PostgresEvent,
+    {
         let conn = self.pool.get().await?;
         let stmt = conn.prepare_cached(INSERT_EVENT).await?;
         let result = conn
@@ -155,7 +151,7 @@ where
     }
 }
 
-impl<E> EventStore<E> for PostgresEventStore<E>
+impl<E> EventStore<E> for PostgresEventStore
 where
     E: PostgresEvent,
 {
@@ -214,7 +210,7 @@ mod tests {
     use tokio_postgres::NoTls;
     use uuid::Uuid;
 
-    fn store() -> PostgresEventStore<TestEvent> {
+    fn store() -> impl EventStore<TestEvent> {
         let mut cfg = Config::new();
         cfg.host = Some("localhost".to_string());
         cfg.user = Some("postgres".to_string());
