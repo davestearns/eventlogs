@@ -7,7 +7,6 @@ use deadpool_redis::{
     redis::{self, AsyncCommands, RedisError, ToRedisArgs},
     Pool, PoolError,
 };
-use serde::{de::DeserializeOwned, Serialize};
 
 use super::AggregationCacheSerde;
 
@@ -50,7 +49,7 @@ impl<S> RedisAggregationCache<S> {
 
 impl<A, S> AggregationCache<A> for RedisAggregationCache<S>
 where
-    A: Send + Sync + Serialize + DeserializeOwned,
+    A: Send + Sync,
     S: AggregationCacheSerde<A> + Send + Sync,
 {
     async fn put(&self, aggregation: &Aggregation<A>) -> Result<(), AggregationCacheError> {

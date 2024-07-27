@@ -80,7 +80,7 @@ pub struct AppendOptions {
 }
 
 #[derive(Debug)]
-pub struct LogManager<E: Send, A: Aggregate<E>, ES: EventStore<E>, AC: AggregationCache<A>> {
+pub struct LogManager<E, A, ES, AC> {
     event_store: ES,
     aggregation_cache: Arc<AC>,
     aggregation_sender: Sender<Aggregation<A>>,
