@@ -100,7 +100,7 @@ impl Default for LogManagerOptions<NoPolicy> {
 }
 
 #[derive(Debug)]
-pub struct LogManager<E, A, ES, AC, ACP> {
+pub struct LogManager<E, A, ES, AC, ACP = NoPolicy> {
     event_store: ES,
     aggregation_cache: Arc<AC>,
     aggregation_sender: Sender<Aggregation<A>>,
@@ -274,7 +274,6 @@ mod tests {
         TestAggregate,
         FakeEventStore<TestEvent>,
         FakeAggregationCache<TestAggregate>,
-        NoPolicy,
     > {
         LogManager::new(
             FakeEventStore::<TestEvent>::new(),
