@@ -72,12 +72,12 @@ pub enum LogManagerError {
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CreateOptions {
-    idempotency_key: Option<String>,
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct AppendOptions {
-    idempotency_key: Option<String>,
+    pub idempotency_key: Option<String>,
 }
 
 #[derive(Debug)]
