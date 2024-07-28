@@ -4,13 +4,14 @@ use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
 use ids::LogId;
 use serde::{Deserialize, Serialize};
-use std::{marker::PhantomData, sync::Arc};
+use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 use stores::EventStoreError;
 use thiserror::Error;
 use tokio::sync::mpsc::{self, Sender};
 
 pub mod caches;
 pub mod ids;
+pub mod policies;
 pub mod stores;
 
 pub trait EventRecord<E> {
@@ -80,6 +81,15 @@ pub struct AppendOptions {
     pub idempotency_key: Option<String>,
 }
 
+pub trait AggregationCachingPolicy<A>: Debug + Send + Sync + 'static {
+    fn should_cache(&self, aggregation: &Aggregation<A>) -> bool;
+}
+
+#[derive(Debug, Default)]
+pub struct LogManagerOptions<A> {
+    aggregation_caching_policy: Option<Box<dyn AggregationCachingPolicy<A>>>,
+}
+
 #[derive(Debug)]
 pub struct LogManager<E, A, ES, AC> {
     event_store: ES,
@@ -95,7 +105,7 @@ where
     ES: EventStore<E>,
     AC: AggregationCache<A> + Send + Sync + 'static,
 {
-    pub fn new(event_store: ES, aggregation_cache: AC) -> Self {
+    pub fn new(event_store: ES, aggregation_cache: AC, options: LogManagerOptions<A>) -> Self {
         let cache_arc = Arc::new(aggregation_cache);
         let cloned_cache_arc = cache_arc.clone();
         let (sender, mut receiver) = mpsc::channel::<Aggregation<A>>(1024);
@@ -106,8 +116,15 @@ where
         // of the reduce() method.
         tokio::spawn(async move {
             while let Some(aggregation) = receiver.recv().await {
-                // ignore errors since this is an async best-effort operation
-                let _ = cloned_cache_arc.put(&aggregation).await;
+                if options
+                    .aggregation_caching_policy
+                    .as_ref()
+                    .map(|p| p.should_cache(&aggregation))
+                    .unwrap_or(true)
+                {
+                    // ignore errors since this is an async best-effort operation
+                    let _ = cloned_cache_arc.put(&aggregation).await;
+                }
             }
         });
 
@@ -212,6 +229,7 @@ where
 #[cfg(test)]
 mod tests {
     use caches::fake::{FakeAggregationCache, FakeAggregationCacheOp};
+    use policies::LogLengthPolicy;
     use stores::fake::FakeEventStore;
     use uuid::Uuid;
 
@@ -239,12 +257,22 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn create_reduce() {
-        let mgr = LogManager::new(
+    fn log_manager() -> LogManager<
+        TestEvent,
+        TestAggregate,
+        FakeEventStore<TestEvent>,
+        FakeAggregationCache<TestAggregate>,
+    > {
+        LogManager::new(
             FakeEventStore::<TestEvent>::new(),
             FakeAggregationCache::<TestAggregate>::new(),
-        );
+            LogManagerOptions::default(),
+        )
+    }
+
+    #[tokio::test]
+    async fn create_reduce() {
+        let mgr = log_manager();
 
         let log_id = LogId::new();
         mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
@@ -264,6 +292,7 @@ mod tests {
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
             FakeAggregationCache::<TestAggregate>::new_with_notifications(sender),
+            LogManagerOptions::default(),
         );
 
         let log_id = LogId::new();
@@ -328,10 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn idempotent_create() {
-        let mgr = LogManager::new(
-            FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestAggregate>::new(),
-        );
+        let mgr = log_manager();
 
         let log_id = LogId::new();
         let idempotency_key = Uuid::now_v7().to_string();
@@ -360,10 +386,7 @@ mod tests {
 
     #[tokio::test]
     async fn idempotent_append() {
-        let mgr = LogManager::new(
-            FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestAggregate>::new(),
-        );
+        let mgr = log_manager();
 
         let log_id = LogId::new();
         mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
@@ -408,10 +431,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_append() {
-        let mgr = LogManager::new(
-            FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestAggregate>::new(),
-        );
+        let mgr = log_manager();
 
         let log_id = LogId::new();
         mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
@@ -437,5 +457,66 @@ mod tests {
             .await;
 
         assert_eq!(result, Err(LogManagerError::ConcurrentAppend(log_id)));
+    }
+
+    #[tokio::test]
+    async fn log_length_caching_policy() {
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::channel::<FakeAggregationCacheOp<TestAggregate>>(64);
+        let mgr = LogManager::new(
+            FakeEventStore::<TestEvent>::new(),
+            FakeAggregationCache::<TestAggregate>::new_with_notifications(sender),
+            LogManagerOptions {
+                aggregation_caching_policy: Some(Box::new(LogLengthPolicy::at_least(2))),
+            },
+        );
+
+        let log_id = LogId::new();
+        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .await
+            .unwrap();
+
+        let first_agg = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(first_agg.log_id(), &log_id);
+        assert_eq!(first_agg.through_index(), 0);
+        assert_eq!(first_agg.aggregate().count, 1);
+
+        // first op should be a Get that found nothing
+        let op = receiver.recv().await.unwrap();
+        assert_eq!(
+            op,
+            FakeAggregationCacheOp::Get {
+                log_id: log_id.clone(),
+                response: None
+            }
+        );
+        // policy should have prohibited the aggregate from being cached
+        // (will assert that below)
+
+        mgr.append(first_agg, &TestEvent::Decrement, &AppendOptions::default())
+            .await
+            .unwrap();
+        let second_agg = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(second_agg.log_id(), &log_id);
+        assert_eq!(second_agg.through_index(), 1);
+        assert_eq!(second_agg.aggregate().count, 0);
+
+        // first op should be a Get that found nothing because policy prohibited caching
+        let op = receiver.recv().await.unwrap();
+        assert_eq!(
+            op,
+            FakeAggregationCacheOp::Get {
+                log_id: log_id.clone(),
+                response: None
+            }
+        );
+        // but now that the log has the min length required, it should have cached the second_agg
+        let op = receiver.recv().await.unwrap();
+        assert_eq!(
+            op,
+            FakeAggregationCacheOp::Put {
+                aggregation: second_agg.clone(),
+            }
+        );
     }
 }
