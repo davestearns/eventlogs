@@ -3,6 +3,7 @@ use caches::{AggregationCache, AggregationCacheError};
 use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
 use ids::LogId;
+use policies::NoPolicy;
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 use stores::EventStoreError;
@@ -85,27 +86,37 @@ pub trait AggregationCachingPolicy<A>: Debug + Send + Sync + 'static {
     fn should_cache(&self, aggregation: &Aggregation<A>) -> bool;
 }
 
-#[derive(Debug, Default)]
-pub struct LogManagerOptions<A> {
-    aggregation_caching_policy: Option<Box<dyn AggregationCachingPolicy<A>>>,
+#[derive(Debug)]
+pub struct LogManagerOptions<ACP = NoPolicy> {
+    aggregation_caching_policy: Option<ACP>,
+}
+
+impl Default for LogManagerOptions<NoPolicy> {
+    fn default() -> Self {
+        Self {
+            aggregation_caching_policy: None,
+        }
+    }
 }
 
 #[derive(Debug)]
-pub struct LogManager<E, A, ES, AC> {
+pub struct LogManager<E, A, ES, AC, ACP> {
     event_store: ES,
     aggregation_cache: Arc<AC>,
     aggregation_sender: Sender<Aggregation<A>>,
     _phantom_e: PhantomData<E>,
+    _phantom_acp: PhantomData<ACP>,
 }
 
-impl<E, A, ES, AC> LogManager<E, A, ES, AC>
+impl<E, A, ES, AC, ACP> LogManager<E, A, ES, AC, ACP>
 where
     E: Send + 'static,
     A: Aggregate<Event = E> + Send + Clone + 'static,
     ES: EventStore<E>,
     AC: AggregationCache<A> + Send + Sync + 'static,
+    ACP: AggregationCachingPolicy<A> + Send + Sync + 'static,
 {
-    pub fn new(event_store: ES, aggregation_cache: AC, options: LogManagerOptions<A>) -> Self {
+    pub fn new(event_store: ES, aggregation_cache: AC, options: LogManagerOptions<ACP>) -> Self {
         let cache_arc = Arc::new(aggregation_cache);
         let cloned_cache_arc = cache_arc.clone();
         let (sender, mut receiver) = mpsc::channel::<Aggregation<A>>(1024);
@@ -133,6 +144,7 @@ where
             aggregation_cache: cache_arc,
             aggregation_sender: sender,
             _phantom_e: PhantomData,
+            _phantom_acp: PhantomData,
         }
     }
 
@@ -262,6 +274,7 @@ mod tests {
         TestAggregate,
         FakeEventStore<TestEvent>,
         FakeAggregationCache<TestAggregate>,
+        NoPolicy,
     > {
         LogManager::new(
             FakeEventStore::<TestEvent>::new(),
@@ -467,7 +480,7 @@ mod tests {
             FakeEventStore::<TestEvent>::new(),
             FakeAggregationCache::<TestAggregate>::new_with_notifications(sender),
             LogManagerOptions {
-                aggregation_caching_policy: Some(Box::new(LogLengthPolicy::at_least(2))),
+                aggregation_caching_policy: Some(LogLengthPolicy::at_least(2)),
             },
         );
 

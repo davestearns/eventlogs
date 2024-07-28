@@ -59,3 +59,11 @@ impl<A> AggregationCachingPolicy<A> for LogAgePolicy {
         age >= self.min_age && age <= self.max_age
     }
 }
+
+#[derive(Debug, Default)]
+pub struct NoPolicy;
+impl<A> AggregationCachingPolicy<A> for NoPolicy {
+    fn should_cache(&self, _aggregation: &Aggregation<A>) -> bool {
+        true
+    }
+}
