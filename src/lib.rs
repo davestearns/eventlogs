@@ -303,7 +303,7 @@ mod tests {
             tokio::sync::mpsc::channel::<FakeAggregationCacheOp<TestAggregate>>(64);
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestAggregate>::new_with_notifications(sender),
+            FakeAggregationCache::<TestAggregate>::with_notifications(sender),
             LogManagerOptions::default(),
         );
 
@@ -477,7 +477,7 @@ mod tests {
             tokio::sync::mpsc::channel::<FakeAggregationCacheOp<TestAggregate>>(64);
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestAggregate>::new_with_notifications(sender),
+            FakeAggregationCache::<TestAggregate>::with_notifications(sender),
             LogManagerOptions {
                 aggregation_caching_policy: Some(LogLengthPolicy::at_least(2)),
             },

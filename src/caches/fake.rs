@@ -41,7 +41,7 @@ where
         }
     }
 
-    pub fn new_with_notifications(op_sender: Sender<FakeAggregationCacheOp<A>>) -> Self {
+    pub fn with_notifications(op_sender: Sender<FakeAggregationCacheOp<A>>) -> Self {
         Self {
             mx_db: Mutex::new(DB {
                 table: HashMap::new(),
