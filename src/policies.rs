@@ -1,5 +1,3 @@
-use std::u32;
-
 use chrono::{TimeDelta, Utc};
 
 use crate::{Aggregation, AggregationCachingPolicy};
