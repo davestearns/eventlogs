@@ -40,7 +40,11 @@ pub struct RedisAggregationCache<S> {
 
 impl<S> RedisAggregationCache<S> {
     pub fn new(pool: Pool, serde: S, ttl: Option<TimeDelta>) -> Self {
-        Self { pool, serde, ttl }
+        Self {
+            pool,
+            serde,
+            ttl: ttl.map(|td| td.abs()),
+        }
     }
 }
 
@@ -60,7 +64,7 @@ where
             conn.set_ex(
                 aggregation.log_id(),
                 &serialized,
-                duration.abs().num_seconds() as u64,
+                duration.num_seconds() as u64,
             )
             .await?;
         } else {
@@ -74,11 +78,8 @@ where
         let mut conn = self.pool.get().await?;
 
         let maybe_bytes: Option<Vec<u8>> = if let Some(duration) = self.ttl {
-            conn.get_ex(
-                log_id,
-                redis::Expiry::EX(duration.abs().num_seconds() as usize),
-            )
-            .await?
+            conn.get_ex(log_id, redis::Expiry::EX(duration.num_seconds() as usize))
+                .await?
         } else {
             conn.get(log_id).await?
         };
