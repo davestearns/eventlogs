@@ -93,7 +93,6 @@ let create_options = CreateOptions {
 
 // pass create_options to log_manager.create() ...
 // and test the `result` to determine if it's an idempotent replay error ...
-# let result: Result<(), LogManagerError> = Ok(());
 if let Err(LogManagerError::IdempotentReplay {log_id, ..}) = result {
     // a log was already created using that same idempotency key
     // and the log_id field of the error contains the log_id of
