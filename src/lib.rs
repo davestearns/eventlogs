@@ -44,7 +44,7 @@
 //! use eventlogs::caches::fake::FakeAggregationCache;
 //!
 //! /// Events are typically defined as members of an enum.
-//! /// properties for events can be defined as fields on
+//! /// Properties for events can be defined as fields on
 //! /// the enum variant.
 //! #[derive(Debug, Clone)]
 //! pub enum TestEvent {
@@ -311,7 +311,7 @@ pub struct LogManagerOptions<ACP = NoPolicy> {
 impl LogManagerOptions {
     /// Returns an instance with all fields set to defaults.
     ///
-    /// This exists to overcome a [frustrating limitation in rust 
+    /// This exists to overcome a [frustrating limitation in rust
     /// type-inference](https://www.reddit.com/r/rust/comments/ek6w5g/default_generic_type_inference/)
     /// when implementing or deriving [Default] on a type that has generic type
     /// parameters with defaults types. Instead of having to write

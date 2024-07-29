@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/davestearns/eventlogs/actions/workflows/ci.yml/badge.svg)](https://github.com/davestearns/eventlogs/actions/workflows/ci.yml)
 
-This crate supports a style of transaction processing known as ["event sourcing."](https://martinfowler.com/eaaDev/EventSourcing.html) Instead of storing a single mutable record that is updated as the entity's state changes, event-sourcing systems record a series of immutable events about each entity, and reduce those events into a current state (known as an "aggregate") as needed. The event log for an entity provides a complete audit trail and makes it easier to record distinct properties about events that may occur multiple times (e.g., a payment that is partially captured or refunded several times).
+This crate supports a style of transaction processing known as ["event sourcing."](https://martinfowler.com/eaaDev/EventSourcing.html) Instead of storing a single mutable record that is updated as the entity's state changes, event-sourcing systems record a series of immutable events about each entity, and reduce those events into a current state (known as an "aggregate") as needed. The event log for an entity provides a complete audit trail and makes it easier to record distinct properties about events that may occur multiple times (e.g., a task that is closed and re-opened multiple times).
 
 > [!CAUTION]
 > The crate is functional and unit tested, but hasn't been used in production yet, so use at your own risk!
@@ -24,7 +24,7 @@ use eventlogs::stores::fake::FakeEventStore;
 use eventlogs::caches::fake::FakeAggregationCache;
 
 /// Events are typically defined as members of an enum.
-/// properties for events can be defined as fields on
+/// Properties for events can be defined as fields on
 /// the enum variant.
 #[derive(Debug, Clone)]
 pub enum TestEvent {
