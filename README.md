@@ -10,10 +10,10 @@ This crate supports a style of transaction processing known as ["event sourcing.
 ## Built-In Features
 
 - **Idempotency:** When creating a new log or appending an event to an existing one, the caller can include a unique `idempotency_key` that ensures the operation occurs only once, even if the request is retried. Idempotent replays will return a
-[LogManagerError::IdempotentReplay] error with the previously-recorded [LogId] and event index, so that you can easily detect and react to them.
+`IdempotentReplay` error with the previously-recorded `LogId` and event index, so that you can easily detect and react to them.
 - **Concurrency:** If multiple service instances attempt to append a new event to the same log at the same time, only one will win the race, and the others will receive an error. The losers can then re-reduce the log to apply the new event to the aggregate, determine if their operation is still relevant, and try again.
 - **Async Aggregate Caching:** When you reduce a log, the resulting aggregate is written asynchronously to a cache like Redis. Subsequent calls to `reduce()` will reuse that cached aggregate, and only fetch/apply events that were recorded _after_ the aggregate was last calculated. This makes subsequent reductions faster without slowing down your code.
-- **Caching Policies:** Aggregates are always cached by default, but if you want to control when this occurs based on aggregate properties, you can provide an implementation of [AggregationCachingPolicy], which will be called by the asynchronous caching task to determine if the aggregate should be written to the cache.
+- **Caching Policies:** Aggregates are always cached by default, but if you want to control when this occurs based on aggregate properties, you can provide an implementation of `AggregationCachingPolicy`, which will be called by the asynchronous caching task to determine if the aggregate should be written to the cache.
 
 ## Example Usage
 ```rust
