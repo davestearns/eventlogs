@@ -38,7 +38,7 @@
 //! ## Example Usage
 //! ```
 //! use std::error::Error;
-//! use eventlogs::{ids::LogId, LogManager, LogManagerOptions, CreateOptions,
+//! use eventlogs::{LogId, LogManager, LogManagerOptions, CreateOptions,
 //!     AppendOptions, Aggregate, EventRecord};
 //! use eventlogs::stores::fake::FakeEventStore;
 //! use eventlogs::caches::fake::FakeAggregationCache;
@@ -110,12 +110,12 @@
 //!
 //! ```
 //! # use eventlogs::{CreateOptions, LogManagerError};
-//! 
+//!
 //! let create_options = CreateOptions {
 //!     idempotency_key: Some(uuid::Uuid::now_v7().to_string()),
 //!     .. Default::default()
 //! };
-//! 
+//!
 //! // pass create_options to log_manager.create() ...
 //! // and test the `result` to determine if it's an idempotent replay error ...
 //! # let result: Result<(), LogManagerError> = Ok(());
@@ -130,7 +130,7 @@ use crate::stores::EventStore;
 use caches::{AggregationCache, AggregationCacheError};
 use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
-use ids::LogId;
+pub use ids::LogId;
 use policies::NoPolicy;
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, marker::PhantomData, sync::Arc};
@@ -138,9 +138,13 @@ use stores::EventStoreError;
 use thiserror::Error;
 use tokio::sync::mpsc::{self, Sender};
 
+/// The [AggregationCache] trait and implementations.
 pub mod caches;
+/// Home of the [LogId] struct.
 pub mod ids;
+/// The [AggregationCachingPolicy] trait and a few generic implementations.
 pub mod policies;
+/// The [EventStore] trait and implementations.
 pub mod stores;
 
 pub trait EventRecord<E> {
