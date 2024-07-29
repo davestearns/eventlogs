@@ -32,6 +32,7 @@ impl ToRedisArgs for LogId {
     }
 }
 
+/// An [AggregationCache] backed by a redis server/cluster.
 pub struct RedisAggregationCache<S> {
     pool: Pool,
     serde: S,
@@ -39,6 +40,9 @@ pub struct RedisAggregationCache<S> {
 }
 
 impl<S> RedisAggregationCache<S> {
+    /// Constructs a new instance given a pre-configured deadpool_redis Pool,
+    /// an [AggregationCacheSerde], and an optional time-to-live for items
+    /// written to the cache.
     pub fn new(pool: Pool, serde: S, ttl: Option<TimeDelta>) -> Self {
         Self {
             pool,

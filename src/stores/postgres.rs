@@ -103,7 +103,7 @@ pub struct PostgresEventStore {
 }
 
 impl PostgresEventStore {
-    /// Constructs a new instance given a pre-configured deadpool-postgres [Pool].
+    /// Constructs a new instance given a pre-configured deadpool-postgres Pool.
     pub fn new(pool: Pool) -> Self {
         PostgresEventStore { pool }
     }
