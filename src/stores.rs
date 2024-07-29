@@ -3,11 +3,10 @@ use crate::{AppendOptions, CreateOptions, EventRecord};
 use futures_util::Stream;
 use thiserror::Error;
 
+pub mod fake;
+
 #[cfg(feature = "postgres-store")]
 pub mod postgres;
-
-#[cfg(test)]
-pub mod fake;
 
 #[derive(Debug, Error)]
 pub enum EventStoreError {

@@ -3,11 +3,10 @@ use std::error::Error;
 use crate::{ids::LogId, Aggregation};
 use thiserror::Error;
 
+pub mod fake;
+
 #[cfg(feature = "redis-cache")]
 pub mod redis;
-
-#[cfg(test)]
-pub mod fake;
 
 #[derive(Debug, Error)]
 pub enum AggregationCacheError {
