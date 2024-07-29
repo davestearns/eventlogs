@@ -4,6 +4,9 @@
 
 This crate supports a style of transaction processing known as ["event sourcing."](https://martinfowler.com/eaaDev/EventSourcing.html) Instead of storing a single mutable record that is updated as the entity's state changes, event-sourcing systems record a series of immutable events about each entity, and reduce those events into a current state (known as an "aggregate") as needed. The event log for an entity provides a complete audit trail and makes it easier to record distinct properties about events that may occur multiple times (e.g., a payment that is partially captured or refunded several times).
 
+> [!CAUTION]
+> The crate is functional and unit tested, but hasn't been used in production yet, so use at your own risk!
+
 ## Built-In Features
 
 - **Idempotency:** When creating a new log or appending an event to an existing one, the caller can include a unique `idempotency_key` that ensures the operation occurs only once, even if the request is retried. Idempotent replays will return a
@@ -15,7 +18,7 @@ This crate supports a style of transaction processing known as ["event sourcing.
 ## Example Usage
 ```rust
 use std::error::Error;
-use eventlogs::{ids::LogId, LogManager, LogManagerOptions, CreateOptions,
+use eventlogs::{LogId, LogManager, LogManagerOptions, CreateOptions,
     AppendOptions, Aggregate, EventRecord};
 use eventlogs::stores::fake::FakeEventStore;
 use eventlogs::caches::fake::FakeAggregationCache;
@@ -49,17 +52,28 @@ impl Aggregate for TestAggregate {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // This uses testing fakes, but you would use PostgresEventStore
-    // RedisAggregationCache configured to point to your servers.
+    // To begin, create a LogManager, passing the event store and
+    // aggregation cache you want to use. This example uses testing fakes,
+    // but you would use PostgresEventStore RedisAggregationCache, configured
+    // to point to your servers/clusters.
     let log_manager = LogManager::new(
         FakeEventStore::<TestEvent>::new(),
         FakeAggregationCache::<TestAggregate>::new(),
-        LogManagerOptions::default(),
+        LogManagerOptions::none(),
     );
     
     // Create a new log with an Increment event as the first event.
+    // To ensure that the log is created only once, even if you or
+    // your caller has to retry after a network timeout, use an
+    // idempotency key in the CreateOptions. If a log was already
+    // created with that same idempotency key, you will get an
+    // IdempotencyReplay error with the previously-created log ID.
+    let create_options = CreateOptions {
+        idempotency_key: Some(uuid::Uuid::now_v7().to_string()),
+        ..Default::default()
+    };
     let log_id = LogId::new();
-    log_manager.create(&log_id, &TestEvent::Increment, &CreateOptions::default()).await?;
+    log_manager.create(&log_id, &TestEvent::Increment, &create_options).await?;
     
     // Reduce the log to get the current state. The TestAggregate
     // will be cached automatically on a background task, so it won't
@@ -68,34 +82,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(aggregation.aggregate().count, 1);
 
     // Append another event, this time a Decrement.
+    // If another process is racing with this one, only one will
+    // successfully append, and the other will get a ConcurrentAppend
+    // error. And idempotency keys may also be provided in the AppendOptions.
     log_manager.append(aggregation, &TestEvent::Decrement, &AppendOptions::default()).await?;
 
-    // Re-reduce to apply the new event. The cached aggregate will
-    // be used and only the new event will be fetched from the database.
+    // Re-reduce: the cached aggregate will automatically be used as
+    // the starting point, so that we only have to select the events with
+    // higher indexes than the `through_index()` on the cached aggregation.
     let aggregation = log_manager.reduce(&log_id).await?;
     assert_eq!(aggregation.aggregate().count, 0);
 
     Ok(())
-}
-```
-
-## Idempotency
-To ensure that log creation or an append happens only once, even if you
-need to retry the operation due to a network timeout, supply a universally
-unique idempotency key (the [uuid crate](https://docs.rs/uuid/latest/uuid/)
-is handy for this).
-
-```rust
-let create_options = CreateOptions {
-    idempotency_key: Some(uuid::Uuid::now_v7().to_string()),
-    .. Default::default()
-};
-
-// pass create_options to log_manager.create() ...
-// and test the `result` to determine if it's an idempotent replay error ...
-if let Err(LogManagerError::IdempotentReplay {log_id, ..}) = result {
-    // a log was already created using that same idempotency key
-    // and the log_id field of the error contains the log_id of
-    // that previously-created log
 }
 ```
