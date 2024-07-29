@@ -79,7 +79,7 @@
 //!     let log_manager = LogManager::new(
 //!         FakeEventStore::<TestEvent>::new(),
 //!         FakeAggregationCache::<TestAggregate>::new(),
-//!         LogManagerOptions::default(),
+//!         LogManagerOptions::none(),
 //!     );
 //!     
 //!     // Create a new log with an Increment event as the first event.
@@ -207,7 +207,7 @@ impl<A> Aggregation<A> {
     }
 }
 
-/// The error type in all [LogManager] `Result` return values.
+/// The error type returned from all [LogManager] methods.
 #[derive(Debug, Error, PartialEq)]
 pub enum LogManagerError {
     /// Occurs when there is an unexpected error from the [EventStore].
@@ -256,10 +256,13 @@ pub enum LogManagerError {
 /// future, as their types will always implement [Default].
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CreateOptions {
+    /// A universally-unique value that ensures the operation happens
+    /// only once, regardless of retries after network timeouts or other
+    /// communication failures.
     pub idempotency_key: Option<String>,
 }
 
-/// Options that can be specified when using [LogManager::create].
+/// Options that can be specified when using [LogManager::append].
 ///
 /// To protect yourself against more options being added in the future,
 /// use `..Default::default()` at the end of an initialization, like so:
@@ -275,26 +278,59 @@ pub struct CreateOptions {
 /// future, as their types will always implement [Default].
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct AppendOptions {
+    /// A universally-unique value that ensures the operation happens
+    /// only once, regardless of retries after network timeouts or other
+    /// communication failures.
     pub idempotency_key: Option<String>,
 }
 
+/// Implemented by policies that control if a given [Aggregation] gets cached.
 pub trait AggregationCachingPolicy<A>: Debug + Send + Sync + 'static {
+    /// Returns true if the [Aggregation] should be cached, false if not.
     fn should_cache(&self, aggregation: &Aggregation<A>) -> bool;
 }
 
-#[derive(Debug)]
+/// Options that can be used when constructing a [LogManager].
+///
+/// To protect yourself against more options being added in the future,
+/// use `..Default::default()` at the end of an initialization, like so:
+/// ```
+/// use eventlogs::{LogManagerOptions, policies::LogLengthPolicy};
+/// let options = LogManagerOptions {
+///     aggregation_caching_policy: Some(LogLengthPolicy::at_least(10)),
+///     ..Default::default()
+/// };
+/// ```
+/// This will continue to compile even if more fields are added in the
+/// future, as their types will always implement [Default].
+#[derive(Debug, Default)]
 pub struct LogManagerOptions<ACP = NoPolicy> {
     pub aggregation_caching_policy: Option<ACP>,
 }
 
-impl Default for LogManagerOptions<NoPolicy> {
-    fn default() -> Self {
+impl LogManagerOptions {
+    /// Returns an instance with all fields set to defaults.
+    ///
+    /// This exists to overcome a [frustrating limitation in rust 
+    /// type-inference](https://www.reddit.com/r/rust/comments/ek6w5g/default_generic_type_inference/)
+    /// when implementing or deriving [Default] on a type that has generic type
+    /// parameters with defaults types. Instead of having to write
+    /// `<LogManagerOptions>::default()`, you can use `LogManagerOptions::none()`
+    /// instead.
+    pub fn none() -> Self {
         Self {
             aggregation_caching_policy: None,
         }
     }
 }
 
+/// Manages logs with given Event and [Aggregate] types, stored in an [EventStore],
+/// and cached in an [AggregationCache], optionally controlled by an
+/// [AggregationCachingPolicy].
+///
+/// If you have multiple event/aggregate types in your
+/// system, create a separate [LogManager] for each, though you can share the
+/// same [EventStore] and [AggregationCache] since [LogId]s are universally unique.
 #[derive(Debug)]
 pub struct LogManager<E, A, ES, AC, ACP = NoPolicy> {
     event_store: ES,
@@ -312,6 +348,8 @@ where
     AC: AggregationCache<A> + Send + Sync + 'static,
     ACP: AggregationCachingPolicy<A> + Send + Sync + 'static,
 {
+    /// Constructs a new [LogManager] that uses the provided [EventStore], [AggregationCache],
+    /// and options.
     pub fn new(event_store: ES, aggregation_cache: AC, options: LogManagerOptions<ACP>) -> Self {
         let cache_arc = Arc::new(aggregation_cache);
         let cloned_cache_arc = cache_arc.clone();
@@ -344,6 +382,14 @@ where
         }
     }
 
+    /// Creates a new log for the provided `log_id` and appends the
+    /// `first_event` to that new log.
+    ///
+    /// If you specify an idempotency
+    /// key in the [CreateOptions] and this is an idempotent replay,
+    /// the returned [Result] will be a
+    /// [LogManagerError::IdempotentReplay] error with the id of the
+    /// log that was previously-created with the same idempotency key.
     pub async fn create(
         &self,
         log_id: &LogId,
@@ -369,6 +415,10 @@ where
         Ok(())
     }
 
+    /// Reduces the events in a given log to the configured [Aggregate].
+    ///
+    /// The [Aggregation] will be cached asynchronously if the caching
+    /// policy allows it. By default, all aggregations will be cached.
     pub async fn reduce(&self, log_id: &LogId) -> Result<Aggregation<A>, LogManagerError> {
         let maybe_aggregation = self.aggregation_cache.get(log_id).await?;
         let (mut aggregate, starting_index) = maybe_aggregation
@@ -399,6 +449,31 @@ where
         Ok(aggregation)
     }
 
+    /// Appends another event to an existing log identified by the [Aggregation].
+    ///
+    /// If multiple processes race to append an event to the same log, only one will
+    /// win and the others will get a [LogManagerError::ConcurrentAppend] error.
+    /// The losers should re-reduce the log to see the effect of the new event,
+    /// decide if their event is still relevant, and if so, attempt to append again.
+    ///
+    /// If an idempotency key is provided in the [AppendOptions] and another event
+    /// already exists with that same key, this will return a
+    /// [LogManagerError::IdempotentReplay] error containing the log ID and index
+    /// of the already-recorded event with that same idempotency key. If you want
+    /// the idempotency key keys enforced per-log and not universally, you can set
+    /// the [AppendOptions::idempotency_key] to the combination of the log ID and
+    /// the idempotency key you received from your caller, like so:
+    /// ```
+    /// use eventlogs::{AppendOptions, LogId};
+    /// # let log_id = LogId::new();
+    /// # let idempotency_key_from_caller = "test".to_string();
+    /// // scope the idempotency key provided by our caller to the log ID
+    /// // so that it doesn't conflict with keys used in other logs.
+    /// let append_options = AppendOptions {
+    ///     idempotency_key: Some(format!("{log_id}_{idempotency_key_from_caller}")),
+    ///     ..Default::default()
+    /// };
+    /// ```
     pub async fn append(
         &self,
         aggregation: Aggregation<A>,
@@ -500,7 +575,7 @@ mod tests {
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
             FakeAggregationCache::<TestAggregate>::with_notifications(sender),
-            LogManagerOptions::default(),
+            LogManagerOptions::none(),
         );
 
         let log_id = LogId::new();
