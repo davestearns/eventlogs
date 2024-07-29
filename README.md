@@ -1,4 +1,4 @@
-# High Performance, Batteries-Included, Event Sourcing in Rust
+# High-Performance, Batteries-Included, Event Sourcing for Rust
 
 [![CI](https://github.com/davestearns/eventlogs/actions/workflows/ci.yml/badge.svg)](https://github.com/davestearns/eventlogs/actions/workflows/ci.yml)
 

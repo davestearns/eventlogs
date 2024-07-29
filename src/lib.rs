@@ -116,6 +116,19 @@
 //!     Ok(())
 //! }
 //! ```
+//! ## Cargo Features
+//!
+//! This crate defines the following Cargo/compiler features:
+//!
+//! | Name | Description | Default? |
+//! |------|-------------|----------|
+//! | postgres-store | Enables the PostgresEventStore | Yes |
+//! | redis-cache | Enables the RedisAggregationCache | Yes |
+//!
+//! Since Postgres and Redis are very common choices, these features
+//! are on by default. As more [EventStore] and [AggregationCache]
+//! implementations are added in the future, corresponding non-default
+//! features will be defined.
 //!
 use crate::stores::EventStore;
 use caches::{AggregationCache, AggregationCacheError};
