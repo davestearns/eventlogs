@@ -18,7 +18,7 @@ where
     E: Clone + Send + Sync,
 {
     fn index(&self) -> u32 {
-        self.index as u32
+        self.index
     }
 
     fn recorded_at(&self) -> DateTime<Utc> {
