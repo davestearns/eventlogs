@@ -72,8 +72,10 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), Box<dyn Error>> {
-//!     // This uses testing fakes, but you would use PostgresEventStore
-//!     // RedisAggregationCache configured to point to your servers.
+//!     // To begin, create a LogManager, passing the event store and
+//!     // aggregation cache you want to use. This example uses testing fakes,
+//!     // but you would use PostgresEventStore RedisAggregationCache, configured
+//!     // to point to your servers/clusters.
 //!     let log_manager = LogManager::new(
 //!         FakeEventStore::<TestEvent>::new(),
 //!         FakeAggregationCache::<TestAggregate>::new(),
@@ -81,8 +83,17 @@
 //!     );
 //!     
 //!     // Create a new log with an Increment event as the first event.
+//!     // To ensure that the log is created only once, even if you or
+//!     // your caller has to retry after a network timeout, use an
+//!     // idempotency key in the CreateOptions. If a log was already
+//!     // created with that same idempotency key, you will get an
+//!     // IdempotencyReplay error with the previously-created log ID.
+//!     let create_options = CreateOptions {
+//!         idempotency_key: Some(uuid::Uuid::now_v7().to_string()),
+//!         ..Default::default()
+//!     };
 //!     let log_id = LogId::new();
-//!     log_manager.create(&log_id, &TestEvent::Increment, &CreateOptions::default()).await?;
+//!     log_manager.create(&log_id, &TestEvent::Increment, &create_options).await?;
 //!     
 //!     // Reduce the log to get the current state. The TestAggregate
 //!     // will be cached automatically on a background task, so it won't
@@ -91,38 +102,18 @@
 //!     assert_eq!(aggregation.aggregate().count, 1);
 //!
 //!     // Append another event, this time a Decrement.
+//!     // If another process is racing with this one, only one will
+//!     // successfully append, and the other will get a ConcurrentAppend
+//!     // error. And idempotency keys may also be provided in the AppendOptions.
 //!     log_manager.append(aggregation, &TestEvent::Decrement, &AppendOptions::default()).await?;
 //!
-//!     // Re-reduce to apply the new event. The cached aggregate will
-//!     // be used and only the new event will be fetched from the database.
+//!     // Re-reduce: the cached aggregate will automatically be used as
+//!     // the starting point, so that we only have to select the events with
+//!     // higher indexes than the `through_index()` on the cached aggregation.
 //!     let aggregation = log_manager.reduce(&log_id).await?;
 //!     assert_eq!(aggregation.aggregate().count, 0);
 //!
 //!     Ok(())
-//! }
-//! ```
-//!
-//! ## Idempotency
-//! To ensure that log creation or an append happens only once, even if you
-//! need to retry the operation due to a network timeout, supply a universally
-//! unique idempotency key (the [uuid crate](https://docs.rs/uuid/latest/uuid/)
-//! is handy for this).
-//!
-//! ```
-//! # use eventlogs::{CreateOptions, LogManagerError};
-//!
-//! let create_options = CreateOptions {
-//!     idempotency_key: Some(uuid::Uuid::now_v7().to_string()),
-//!     .. Default::default()
-//! };
-//!
-//! // pass create_options to log_manager.create() ...
-//! // and test the `result` to determine if it's an idempotent replay error ...
-//! # let result: Result<(), LogManagerError> = Ok(());
-//! if let Err(LogManagerError::IdempotentReplay {log_id, ..}) = result {
-//!     // a log was already created using that same idempotency key
-//!     // and the log_id field of the error contains the log_id of
-//!     // that previously-created log
 //! }
 //! ```
 //!
@@ -147,17 +138,42 @@ pub mod policies;
 /// The [EventStore] trait and implementations.
 pub mod stores;
 
+/// Represents an event read from an [EventStore].
+///
+/// Event stores implement this trait directly on their native row/record
+/// objects so that they don't have to allocate and copy the data. An
+/// [Aggregate] will get these passed to its [Aggregate::apply] method.
 pub trait EventRecord<E> {
+    /// Returns the zero-based sequential index of the event in its log.
     fn index(&self) -> u32;
+    /// Returns the wall-clock time when this event was recorded
+    /// in the [EventStore]. This is for informational purposes only
+    /// since clocks on different service instances using this library
+    /// could be skewed.
     fn recorded_at(&self) -> DateTime<Utc>;
+    /// Returns the event.
     fn event(&self) -> E;
 }
 
+/// The trait that must be implemented on your aggregates.
+///
+/// This allows the framework to apply stored events to your aggregate
+/// during a reduction. Your aggregate can `match` on the provided
+/// `event_record.event()` and update its state accordingly. See the
+/// crate overview documentation for a very simple example of this.
 pub trait Aggregate: Default {
+    /// The event type this aggregate aggregates.
     type Event;
+    /// Applies a single event to the aggregate's state. Events will
+    /// always be applied in index order.
     fn apply(&mut self, event_record: &impl EventRecord<Self::Event>);
 }
 
+/// Describes the result of a successful [LogManager::reduce] operation.
+///
+/// This is what is stored in the [AggregationCache]. During subsequent
+/// reductions, the [LogManager] only selects the events with indexes
+/// higher than the `through_index`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Aggregation<A> {
     log_id: LogId,
@@ -167,35 +183,55 @@ pub struct Aggregation<A> {
 }
 
 impl<A> Aggregation<A> {
+    /// Returns the ID of the log that was reduced.
     pub fn log_id(&self) -> &LogId {
         &self.log_id
     }
 
+    /// Returns the wall-clock time at which the reduction occurred.
+    /// This is for informational purposes only since the clocks
+    /// on different service instances using this library might be
+    /// skewed.
     pub fn reduced_at(&self) -> DateTime<Utc> {
         self.reduced_at
     }
 
+    /// Returns the max event index included in the [Aggregate].
     pub fn through_index(&self) -> u32 {
         self.through_index
     }
 
+    /// Returns a reference to the [Aggregate].
     pub fn aggregate(&self) -> &A {
         &self.aggregate
     }
 }
 
+/// The error type in all [LogManager] `Result` return values.
 #[derive(Debug, Error, PartialEq)]
 pub enum LogManagerError {
+    /// Occurs when there is an unexpected error from the [EventStore].
+    /// Typically this will be a networking or database server error.
     #[error("the event store produced an unexpected error: {0}")]
     EventStoreError(#[from] EventStoreError),
+    /// Occurs when there is an unexpected error from the [AggregationCache].
+    /// Typically this will be a networking or cache server error.
     #[error("the aggregation cache produced an unexpected error: {0}")]
     AggregationCacheError(#[from] AggregationCacheError),
+    /// Occurs when two different processes race to append an event
+    /// to the same log, and this process lost the race. When this occurs,
+    /// you should re-reduce the log to see the effect of the other
+    /// process'es event, determine if your event is still relevant,
+    /// and if so, try the append operation again.
     #[error(
         "another process already appended another event to log_id={0} 
         since your last aggregation; reduce again to apply the new event, 
         determine if you operation is still relevant/necessary, and if so try again"
     )]
     ConcurrentAppend(LogId),
+    /// Occurs when a log is created or appended to using an idempotency key
+    /// that already exists in the [EventStore]. The log_id and event_index
+    /// fields in this error indicate the ID and index of the existing log event.
     #[error("an event with the provided idempotency key already exists")]
     IdempotentReplay {
         idempotency_key: String,
@@ -204,11 +240,39 @@ pub enum LogManagerError {
     },
 }
 
+/// Options that can be specified when using [LogManager::create].
+///
+/// To protect yourself against more options being added in the future,
+/// use `..Default::default()` at the end of an initialization, like so:
+/// ```
+/// # use eventlogs::CreateOptions;
+/// # let caller_supplied_idempotency_key = "test".to_string();
+/// let options = CreateOptions {
+///     idempotency_key: Some(caller_supplied_idempotency_key),
+///     ..Default::default()
+/// };
+/// ```
+/// This will continue to compile even if more fields are added in the
+/// future, as their types will always implement [Default].
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct CreateOptions {
     pub idempotency_key: Option<String>,
 }
 
+/// Options that can be specified when using [LogManager::create].
+///
+/// To protect yourself against more options being added in the future,
+/// use `..Default::default()` at the end of an initialization, like so:
+/// ```
+/// # use eventlogs::AppendOptions;
+/// # let caller_supplied_idempotency_key = "test".to_string();
+/// let options = AppendOptions {
+///     idempotency_key: Some(caller_supplied_idempotency_key),
+///     ..Default::default()
+/// };
+/// ```
+/// This will continue to compile even if more fields are added in the
+/// future, as their types will always implement [Default].
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct AppendOptions {
     pub idempotency_key: Option<String>,
