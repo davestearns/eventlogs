@@ -102,10 +102,13 @@ impl Display for LogId {
 /// Errors that can be returned when parsing a [LogId] from a string.
 #[derive(Debug, Error, Clone)]
 pub enum LogIdParsingError {
+    /// The string is too short to be an encoded [LogId].
     #[error("string is too short")]
     TooShort,
+    /// An error occurred while base64-decoding the string.
     #[error("error decoding string")]
     Decode(#[from] base64::DecodeError),
+    /// The timestamp in the decoded string is out of acceptable range.
     #[error("timestamp {0} is out of acceptable range")]
     TimestampOutOfRange(i64),
 }

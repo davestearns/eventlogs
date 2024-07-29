@@ -45,6 +45,7 @@ impl<E> Database<E> {
     }
 }
 
+/// A fake implementation of [EventStore] that should only be used for testing.
 #[derive(Debug)]
 pub struct FakeEventStore<E> {
     mx_db: Mutex<Database<E>>,

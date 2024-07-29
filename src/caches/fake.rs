@@ -23,6 +23,7 @@ struct DB<A: Clone + Sync + Send> {
     op_sender: Option<Sender<FakeAggregationCacheOp<A>>>,
 }
 
+/// A fake implementation of [AggregationCache] that should only be used for testing.
 #[derive(Debug)]
 pub struct FakeAggregationCache<A: Clone + Send + Sync> {
     mx_db: Mutex<DB<A>>,

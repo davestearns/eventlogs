@@ -62,12 +62,9 @@ impl<'a> FromSql<'a> for LogId {
     }
 }
 
-pub trait PostgresEvent: Serialize + DeserializeOwned + Debug + Send + Sync {}
-impl<T> PostgresEvent for T where T: Serialize + DeserializeOwned + Debug + Send + Sync {}
-
 impl<E> EventRecord<E> for Row
 where
-    E: PostgresEvent,
+    E: Serialize + DeserializeOwned + Debug + Send + Sync,
 {
     fn index(&self) -> u32 {
         self.get("event_index")
@@ -82,11 +79,31 @@ where
     }
 }
 
+/// An implementation of [EventStore] backed by a Postgres database.
+///
+/// This assumes the following schema and table exists in the target server:
+/// ```sql
+/// create schema eventlogs;
+///
+/// create table eventlogs.events (
+///     log_id varchar(128) not null,
+///     event_index OID not null,
+///     recorded_at timestamp with time zone not null,
+///     idempotency_key varchar(256) null constraint idempotency_key_unique unique,
+///     payload jsonb not null,
+///     primary key(log_id, event_index)
+/// );
+/// ```
+/// The [Github repo](https://github.com/davestearns/eventlogs/tree/main/docker/postgres)
+/// contains a `Dockerfile` and `schema.sql` you can use
+/// to build a custom Postgres image with all of this pre-defined. Or run the
+/// schema file against your own existing/hosted Postgres instance.
 pub struct PostgresEventStore {
     pool: Pool,
 }
 
 impl PostgresEventStore {
+    /// Constructs a new instance given a pre-configured deadpool-postgres [Pool].
     pub fn new(pool: Pool) -> Self {
         PostgresEventStore { pool }
     }
@@ -99,7 +116,7 @@ impl PostgresEventStore {
         idempotency_key: &Option<String>,
     ) -> Result<(), EventStoreError>
     where
-        E: PostgresEvent,
+        E: Serialize + DeserializeOwned + Debug + Send + Sync,
     {
         let conn = self.pool.get().await?;
         let stmt = conn.prepare_cached(INSERT_EVENT).await?;
@@ -153,7 +170,7 @@ impl PostgresEventStore {
 
 impl<E> EventStore<E> for PostgresEventStore
 where
-    E: PostgresEvent,
+    E: Serialize + DeserializeOwned + Debug + Send + Sync,
 {
     async fn create(
         &self,
