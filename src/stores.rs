@@ -3,6 +3,7 @@ use crate::{AppendOptions, CreateOptions, EventRecord};
 use futures_util::Stream;
 use thiserror::Error;
 
+#[cfg(feature = "postgres-store")]
 pub mod postgres;
 
 #[cfg(test)]

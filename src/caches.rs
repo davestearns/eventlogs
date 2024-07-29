@@ -3,6 +3,7 @@ use std::error::Error;
 use crate::{ids::LogId, Aggregation};
 use thiserror::Error;
 
+#[cfg(feature = "redis-cache")]
 pub mod redis;
 
 #[cfg(test)]
