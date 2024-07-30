@@ -33,27 +33,31 @@ use eventlogs::caches::fake::FakeReductionCache;
 
 /// Events are typically defined as members of an enum.
 /// Properties for events can be defined as fields on
-/// the enum variant.
+/// the enum variant. In this example, we will use a very
+/// simple set of events that record credits and debits
+/// to a single-currency account (amounts are in minor units).
 #[derive(Debug, Clone)]
-pub enum TestEvent {
-    Increment,
-    Decrement,
+pub enum BalanceEvent {
+    Credit { amount: u32 },
+    Debit { amount: u32 },
 }
 
 /// An Aggregate is a simple struct with fields that get
 /// calculated from the events recorded in the log. Note that
-/// Aggregates must implement the Aggregate and Default traits.
+/// Aggregates must implement the Aggregate and Default traits,
+/// but you can derive Default if your field types already
+/// implement Default.
 #[derive(Debug, Default, Clone)]
-pub struct TestAggregate {
-    pub count: isize,
+pub struct Account {
+    pub balance: i64,
 }
 
-impl Aggregate for TestAggregate {
-    type Event = TestEvent;
+impl Aggregate for Account {
+    type Event = BalanceEvent;
     fn apply(&mut self, event_record: &impl EventRecord<Self::Event>) {
         match event_record.event() {
-            TestEvent::Increment => self.count += 1,
-            TestEvent::Decrement => self.count -= 1,
+            BalanceEvent::Credit { amount } => self.balance += amount as i64,
+            BalanceEvent::Debit { amount } => self.balance -= amount as i64,
         }
     }
 }
@@ -65,44 +69,58 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // but you would use PostgresEventStore RedisReductionCache, configured
     // to point to your servers/clusters.
     let log_manager = LogManager::new(
-        FakeEventStore::<TestEvent>::new(),
-        FakeReductionCache::<TestAggregate>::new()
+        FakeEventStore::<BalanceEvent>::new(),
+        FakeReductionCache::<Account>::new()
     );
     
-    // Create a new log with an Increment event as the first event.
-    // To ensure that the log is created only once, even if you or
-    // your caller has to retry after a network timeout, use an
-    // idempotency key in the CreateOptions. If a log was already
-    // created with that same idempotency key, you will get an
-    // IdempotencyReplay error with the previously-created log ID.
+    // Say your service gets a request to create a new account with a starting
+    // balance, but you want to ensure this happens only once, even if your 
+    // caller gets a network timeout and retries their request. This is
+    // easily supported by having your client provide a unique
+    // idempotency key in the request, and using it in the AppendOptions.
+    // If a log was already created with that same idempotency key, 
+    // in a previous request, you will get an IdempotencyReplay error 
+    // with the previously-created log ID.
+    let caller_supplied_key = uuid::Uuid::now_v7().to_string();
     let options = AppendOptions {
-        idempotency_key: Some(uuid::Uuid::now_v7().to_string()),
+        idempotency_key: Some(caller_supplied_key),
         ..Default::default()
     };
     let log_id = LogId::new();
-    log_manager.create(&log_id, &TestEvent::Increment, &options).await?;
+    let starting_balance_event = BalanceEvent::Credit { amount: 100 };
+    log_manager.create(&log_id, &starting_balance_event, &options).await?;
 
-    // Now let's say our service gets another request. In order to process
-    // it, we need to know the current state of the transaction (the Aggregate).
-    // Use the reduce() method to reduce the events into an Reduction, which
-    // contains our TestAggregate with current state. The Reduction will be
-    // cached automatically by a background task, so it won't slow down our
-    // main code.
+    // Now let's say our service gets another API request to debit the account,
+    // but your rules say that accounts may not go negative.
+    // So we need to reduce the log for this account to check the balance
+    // before we add a the new debit event. The log_manager will also put
+    // this reduction into the cache asynchronously, so it won't slow down
+    // our code.
+    let debit_amount: u32 = 10;
     let reduction = log_manager.reduce(&log_id).await?;
-    assert_eq!(reduction.aggregate().count, 1);
+    assert!(reduction.aggregate().balance - (debit_amount as i64) >= 0);
 
-    // Let's say that the Aggregate's current state allows the operation, and
-    // this time we want to append a Decrement event.
-    // If another process is racing with this one, only one will
-    // successfully append, and the other will get a ConcurrentAppend
-    // error. And idempotency keys may also be provided in the AppendOptions.
-    log_manager.append(&log_id, reduction, &TestEvent::Decrement, &AppendOptions::default()).await?;
+    // We could use an idempotency key here as well, but we will
+    // skip that to keep the code shorter.
+    log_manager.append(
+        &log_id,
+        reduction,
+        &BalanceEvent::Debit { amount: debit_amount }, 
+        &AppendOptions::default())
+        .await?;
 
-    // Re-reduce: the cached aggregate will automatically be used as
-    // the starting point, so that we only have to select the events with
-    // higher indexes than the `through_index()` on the cached reduction.
+    // If we reduce the log again, we will see that the balance has been
+    // debited. But this time the log_manager will read the previous
+    // reduction from the cache, and only apply the new events to it.
     let reduction = log_manager.reduce(&log_id).await?;
-    assert_eq!(reduction.aggregate().count, 0);
+    assert_eq!(reduction.aggregate().balance, 90);
+
+    // If you ever need to list all events in a given log, you can
+    // fetch them in pages using the load() method:
+    let starting_index = 0;
+    let max_events = 100;
+    let events = log_manager.load(&log_id, starting_index, max_events).await?;
+    assert_eq!(events.len(), 2);
 
     Ok(())
 }
