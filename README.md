@@ -17,7 +17,7 @@ This crate supports a style of transaction processing known as ["event sourcing.
 ## Example Usage
 ```rust
 use std::error::Error;
-use eventlogs::{LogId, LogManager, LogManagerOptions, CreateOptions,
+use eventlogs::{LogId, LogManager, LogManagerOptions,
     AppendOptions, Aggregate, EventRecord};
 use eventlogs::stores::fake::FakeEventStore;
 use eventlogs::caches::fake::FakeReductionCache;
@@ -66,12 +66,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // idempotency key in the CreateOptions. If a log was already
     // created with that same idempotency key, you will get an
     // IdempotencyReplay error with the previously-created log ID.
-    let create_options = CreateOptions {
+    let options = AppendOptions {
         idempotency_key: Some(uuid::Uuid::now_v7().to_string()),
         ..Default::default()
     };
     let log_id = LogId::new();
-    log_manager.create(&log_id, &TestEvent::Increment, &create_options).await?;
+    log_manager.create(&log_id, &TestEvent::Increment, &options).await?;
 
     // Now let's say our service gets another request. In order to process
     // it, we need to know the current state of the transaction (the Aggregate).

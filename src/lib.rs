@@ -90,7 +90,7 @@ impl<A> Reduction<A> {
 
     pub fn log_state(&self) -> LogState {
         LogState {
-            last_index: self.through_index,
+            next_index: self.through_index + 1,
         }
     }
 }
@@ -126,28 +126,6 @@ pub enum LogManagerError {
         log_id: LogId,
         event_index: u32,
     },
-}
-
-/// Options that can be specified when using [LogManager::create].
-///
-/// To protect yourself against more options being added in the future,
-/// use `..Default::default()` at the end of an initialization, like so:
-/// ```
-/// # use eventlogs::CreateOptions;
-/// # let caller_supplied_idempotency_key = "test".to_string();
-/// let options = CreateOptions {
-///     idempotency_key: Some(caller_supplied_idempotency_key),
-///     ..Default::default()
-/// };
-/// ```
-/// This will continue to compile even if more fields are added in the
-/// future, as their types will always implement [Default].
-#[derive(Debug, Default, Clone, PartialEq)]
-pub struct CreateOptions {
-    /// A universally-unique value that ensures the operation happens
-    /// only once, regardless of retries after network timeouts or other
-    /// communication failures.
-    pub idempotency_key: Option<String>,
 }
 
 /// Options that can be specified when using [LogManager::append].
@@ -190,23 +168,36 @@ pub struct LogManagerOptions<ACP> {
     pub caching_policy: Option<ACP>,
 }
 
-/// Represents the known state of the log after a create or append operation.
+/// Represents the known state of the log after an event has been
+/// successfully appended by this process.
 ///
-/// This must be passed back to the next append() method.
+/// This (or a Reduction) must be passed back to the next append()
+/// method call so that the state of the application can be
+/// compared with the state of the database. This allows us to
+/// detect and avoid concurrent appends to the same log by
+/// different processes.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct LogState {
-    last_index: u32,
+    next_index: u32,
 }
 
-/// Converts an [Reduction] into a [LogState] by calling [Reduction::log_state].
+impl LogState {
+    /// Constructs a [LogState] for a new log. This is the same
+    /// as calling [LogState::default].
+    fn new() -> Self {
+        Self { next_index: 0 }
+    }
+}
+
+/// Converts a [Reduction] into a [LogState] by calling [Reduction::log_state].
 impl<A> From<Reduction<A>> for LogState {
-    fn from(value: Reduction<A>) -> Self {
-        value.log_state()
+    fn from(reduction: Reduction<A>) -> Self {
+        reduction.log_state()
     }
 }
 
 /// Manages logs with given Event and [Aggregate] types, stored in an [EventStore],
-/// and cached in an [ReductionCache], optionally controlled by an
+/// and cached in a [ReductionCache], optionally controlled by an
 /// [CachingPolicy].
 ///
 /// If you have multiple event/aggregate types in your
@@ -284,24 +275,74 @@ where
         }
     }
 
-    /// Creates a new log for the provided `log_id` and appends the
-    /// `first_event` to that new log.
+    /// Creates a new log for the provided `log_id` and appends the `event`
+    /// to that new log.
     ///
-    /// If you specify an idempotency
-    /// key in the [CreateOptions] and this is an idempotent replay,
-    /// the returned [Result] will be a
+    /// Note that this is equivalent to calling `append()` passing
+    /// `LogState::new()`, but is a bit more discoverable.
+    ///
+    /// If you specify an idempotency key in the [AppendOptions] and this is
+    /// an idempotent replay, the returned [Result] will be a
     /// [LogManagerError::IdempotentReplay] error with the id of the
     /// log that was previously-created with the same idempotency key.
     pub async fn create(
         &self,
         log_id: &LogId,
-        first_event: &E,
-        create_options: &CreateOptions,
+        event: &E,
+        append_options: &AppendOptions,
     ) -> Result<LogState, LogManagerError> {
+        self.append(log_id, LogState::new(), event, append_options)
+            .await
+    }
+
+    /// Appends an event to an existing log.
+    ///
+    /// The `log_state` argument can be either a [LogState] returned from the
+    /// previous create/append call, or a [Reduction] returned from a previous
+    /// reduce call. This allows us to compare the state of the application against
+    /// the state of the database in order to detect concurrent appends to the
+    /// same log by different processes.
+    ///
+    /// If multiple processes race to append an event to the same log, only one will
+    /// win and the others will get a [LogManagerError::ConcurrentAppend] error.
+    /// The losers should re-reduce the log to see the effect of the new event,
+    /// decide if their event is still relevant, and if so, attempt to append again.
+    ///
+    /// If an idempotency key is provided in the [AppendOptions] and another event
+    /// already exists with that same key, this will return a
+    /// [LogManagerError::IdempotentReplay] error containing the log ID and index
+    /// of the already-recorded event with that same idempotency key. If you want
+    /// the idempotency key keys enforced per-log and not universally, you can set
+    /// the [AppendOptions::idempotency_key] to the combination of the log ID and
+    /// the idempotency key you received from your caller, like so:
+    /// ```
+    /// use eventlogs::{AppendOptions, LogId};
+    /// # let log_id = LogId::new();
+    /// # let idempotency_key_from_caller = "test".to_string();
+    /// // scope the idempotency key provided by our caller to the log ID
+    /// // so that it doesn't conflict with keys used in other logs.
+    /// let append_options = AppendOptions {
+    ///     idempotency_key: Some(format!("{log_id}_{idempotency_key_from_caller}")),
+    ///     ..Default::default()
+    /// };
+    /// ```
+    pub async fn append(
+        &self,
+        log_id: &LogId,
+        log_state: impl Into<LogState>,
+        next_event: &E,
+        append_options: &AppendOptions,
+    ) -> Result<LogState, LogManagerError> {
+        let next_index = log_state.into().next_index;
         self.event_store
-            .create(log_id, first_event, create_options)
+            .append(log_id, next_event, next_index, append_options)
             .await
             .map_err(|e| match e {
+                // If the event index already exists, there was a concurrent append
+                // and this process lost the race
+                EventStoreError::EventIndexAlreadyExists { log_id: lid, .. } => {
+                    LogManagerError::ConcurrentAppend(lid)
+                }
                 EventStoreError::IdempotentReplay {
                     idempotency_key,
                     log_id,
@@ -313,8 +354,9 @@ where
                 },
                 _ => LogManagerError::EventStoreError(e),
             })?;
-
-        Ok(LogState { last_index: 0 })
+        Ok(LogState {
+            next_index: next_index + 1,
+        })
     }
 
     /// Reduces the events in a given log to the configured [Aggregate].
@@ -349,69 +391,6 @@ where
         // TODO: add tracing/metrics if this fails.
         let _ = self.reduction_sender.try_send(reduction.clone());
         Ok(reduction)
-    }
-
-    /// Appends another event to an existing log.
-    ///
-    /// The `log_state` argument can be either a [LogState] returned from the
-    /// previous create/append call, or an [Reduction] returned from a previous
-    /// reduce call. This is what tells the manager what the next event index
-    /// should be without requiring an extra query to the database.
-    ///
-    /// If multiple processes race to append an event to the same log, only one will
-    /// win and the others will get a [LogManagerError::ConcurrentAppend] error.
-    /// The losers should re-reduce the log to see the effect of the new event,
-    /// decide if their event is still relevant, and if so, attempt to append again.
-    ///
-    /// If an idempotency key is provided in the [AppendOptions] and another event
-    /// already exists with that same key, this will return a
-    /// [LogManagerError::IdempotentReplay] error containing the log ID and index
-    /// of the already-recorded event with that same idempotency key. If you want
-    /// the idempotency key keys enforced per-log and not universally, you can set
-    /// the [AppendOptions::idempotency_key] to the combination of the log ID and
-    /// the idempotency key you received from your caller, like so:
-    /// ```
-    /// use eventlogs::{AppendOptions, LogId};
-    /// # let log_id = LogId::new();
-    /// # let idempotency_key_from_caller = "test".to_string();
-    /// // scope the idempotency key provided by our caller to the log ID
-    /// // so that it doesn't conflict with keys used in other logs.
-    /// let append_options = AppendOptions {
-    ///     idempotency_key: Some(format!("{log_id}_{idempotency_key_from_caller}")),
-    ///     ..Default::default()
-    /// };
-    /// ```
-    pub async fn append(
-        &self,
-        log_id: &LogId,
-        log_state: impl Into<LogState>,
-        next_event: &E,
-        append_options: &AppendOptions,
-    ) -> Result<LogState, LogManagerError> {
-        let next_index = log_state.into().last_index + 1;
-        self.event_store
-            .append(log_id, next_event, next_index, append_options)
-            .await
-            .map_err(|e| match e {
-                // If the event index already exists, there was a concurrent append
-                // and this process lost the race
-                EventStoreError::EventIndexAlreadyExists { log_id: lid, .. } => {
-                    LogManagerError::ConcurrentAppend(lid)
-                }
-                EventStoreError::IdempotentReplay {
-                    idempotency_key,
-                    log_id,
-                    event_index,
-                } => LogManagerError::IdempotentReplay {
-                    idempotency_key,
-                    log_id,
-                    event_index,
-                },
-                _ => LogManagerError::EventStoreError(e),
-            })?;
-        Ok(LogState {
-            last_index: next_index,
-        })
     }
 }
 
@@ -463,7 +442,7 @@ mod tests {
         let mgr = log_manager();
 
         let log_id = LogId::new();
-        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+        mgr.create(&log_id, &TestEvent::Increment, &AppendOptions::default())
             .await
             .unwrap();
 
@@ -479,7 +458,7 @@ mod tests {
 
         let log_id = LogId::new();
         let mut log_state = mgr
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .create(&log_id, &TestEvent::Increment, &AppendOptions::default())
             .await
             .unwrap();
 
@@ -509,7 +488,7 @@ mod tests {
         );
 
         let log_id = LogId::new();
-        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+        mgr.create(&log_id, &TestEvent::Increment, &AppendOptions::default())
             .await
             .unwrap();
 
@@ -575,7 +554,7 @@ mod tests {
 
         let log_id = LogId::new();
         let idempotency_key = Uuid::now_v7().to_string();
-        let create_options = CreateOptions {
+        let create_options = AppendOptions {
             idempotency_key: Some(idempotency_key.clone()),
             ..Default::default()
         };
@@ -604,7 +583,7 @@ mod tests {
 
         let log_id = LogId::new();
         let log_state = mgr
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .create(&log_id, &TestEvent::Increment, &AppendOptions::default())
             .await
             .unwrap();
 
@@ -647,7 +626,7 @@ mod tests {
 
         let log_id = LogId::new();
         let log_state = mgr
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .create(&log_id, &TestEvent::Increment, &AppendOptions::default())
             .await
             .unwrap();
 
@@ -685,7 +664,7 @@ mod tests {
         );
 
         let log_id = LogId::new();
-        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+        mgr.create(&log_id, &TestEvent::Increment, &AppendOptions::default())
             .await
             .unwrap();
 

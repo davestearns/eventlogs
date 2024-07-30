@@ -1,6 +1,6 @@
 use crate::ids::LogId;
 use crate::stores::{EventStore, EventStoreError};
-use crate::{AppendOptions, CreateOptions, EventRecord};
+use crate::{AppendOptions, EventRecord};
 use chrono::{DateTime, Utc};
 use futures_util::Stream;
 use std::collections::HashMap;
@@ -75,57 +75,22 @@ impl<E> EventStore<E> for FakeEventStore<E>
 where
     E: Clone + Send + Sync + 'static,
 {
-    async fn create(
-        &self,
-        log_id: &LogId,
-        first_event: &E,
-        create_options: &CreateOptions,
-    ) -> Result<(), EventStoreError> {
-        let mut db = self.mx_db.lock().await;
-
-        if let Some(ref key) = create_options.idempotency_key {
-            if let Some((lid, _idx)) = db.idempotency_key_to_log_id.get(key) {
-                return Err(EventStoreError::IdempotentReplay {
-                    idempotency_key: key.clone(),
-                    log_id: lid.clone(),
-                    event_index: 0,
-                });
-            }
-            db.idempotency_key_to_log_id
-                .insert(key.clone(), (log_id.clone(), 0));
-        }
-
-        let record = InternalEventRecord {
-            index: 0,
-            recorded_at: Utc::now(),
-            event: first_event.clone(),
-        };
-
-        db.log_id_to_events.insert(log_id.clone(), vec![record]);
-
-        Ok(())
-    }
-
     async fn append(
         &self,
         log_id: &LogId,
-        next_event: &E,
+        event: &E,
         event_index: u32,
         append_options: &AppendOptions,
     ) -> Result<(), EventStoreError> {
         let mut db = self.mx_db.lock().await;
 
-        if db
-            .log_id_to_events
-            .get(log_id)
-            .expect("log id not found")
-            .iter()
-            .any(|e| e.index == event_index)
-        {
-            return Err(EventStoreError::EventIndexAlreadyExists {
-                log_id: log_id.clone(),
-                event_index,
-            });
+        if let Some(events) = db.log_id_to_events.get(log_id) {
+            if events.iter().any(|e| e.index == event_index) {
+                return Err(EventStoreError::EventIndexAlreadyExists {
+                    log_id: log_id.clone(),
+                    event_index,
+                });
+            }
         }
 
         if let Some(ref key) = append_options.idempotency_key {
@@ -143,10 +108,17 @@ where
         let record = InternalEventRecord {
             index: event_index,
             recorded_at: Utc::now(),
-            event: next_event.clone(),
+            event: event.clone(),
         };
 
-        db.log_id_to_events.get_mut(log_id).unwrap().push(record);
+        match db.log_id_to_events.get_mut(log_id) {
+            Some(vec) => {
+                vec.push(record);
+            }
+            None => {
+                db.log_id_to_events.insert(log_id.clone(), vec![record]);
+            }
+        };
         Ok(())
     }
 
@@ -180,11 +152,11 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn create_load() {
+    async fn append_load() {
         let log_id = LogId::new();
         let store = FakeEventStore::<TestEvent>::new();
         store
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .append(&log_id, &TestEvent::Increment, 0, &AppendOptions::default())
             .await
             .unwrap();
         let row_stream = store.load(&log_id, 0).await.unwrap();
@@ -192,11 +164,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_append_load() {
+    async fn append_multiple_load() {
         let log_id = LogId::new();
         let store = FakeEventStore::<TestEvent>::new();
         store
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .append(&log_id, &TestEvent::Increment, 0, &AppendOptions::default())
             .await
             .unwrap();
 
@@ -214,18 +186,18 @@ mod tests {
         let log_id = LogId::new();
         let idempotency_key = Uuid::now_v7().to_string();
         let store = FakeEventStore::<TestEvent>::new();
-        let create_options = CreateOptions {
+        let options = AppendOptions {
             idempotency_key: Some(idempotency_key.clone()),
         };
 
         store
-            .create(&log_id, &TestEvent::Increment, &create_options)
+            .append(&log_id, &TestEvent::Increment, 0, &options)
             .await
             .unwrap();
 
         let replay_log_id = LogId::new();
         let result = store
-            .create(&replay_log_id, &TestEvent::Increment, &create_options)
+            .append(&replay_log_id, &TestEvent::Increment, 0, &options)
             .await;
 
         assert_eq!(
@@ -243,7 +215,7 @@ mod tests {
         let log_id = LogId::new();
         let store = FakeEventStore::<TestEvent>::new();
         store
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .append(&log_id, &TestEvent::Increment, 0, &AppendOptions::default())
             .await
             .unwrap();
 
@@ -270,22 +242,22 @@ mod tests {
         let log_id = LogId::new();
         let store = FakeEventStore::<TestEvent>::new();
         store
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .append(&log_id, &TestEvent::Increment, 0, &AppendOptions::default())
             .await
             .unwrap();
 
         let idempotency_key = Uuid::now_v7().to_string();
-        let append_options = AppendOptions {
+        let options = AppendOptions {
             idempotency_key: Some(idempotency_key.clone()),
         };
 
         store
-            .append(&log_id, &TestEvent::Decrement, 1, &append_options)
+            .append(&log_id, &TestEvent::Decrement, 1, &options)
             .await
             .unwrap();
 
         let result = store
-            .append(&log_id, &TestEvent::Decrement, 2, &append_options)
+            .append(&log_id, &TestEvent::Decrement, 2, &options)
             .await;
 
         assert_eq!(

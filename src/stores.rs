@@ -1,5 +1,5 @@
 use crate::ids::LogId;
-use crate::{AppendOptions, CreateOptions, EventRecord};
+use crate::{AppendOptions, EventRecord};
 use futures_util::Stream;
 use thiserror::Error;
 
@@ -73,19 +73,7 @@ pub trait EventStore<E>
 where
     E: Send,
 {
-    /// Creates a new log using the specified ID, first event, and options.
-    ///
-    /// If an idempotency key is provided in the options, and a log already
-    /// exists with that same key, this will return an
-    /// [EventStoreError::IdempotentReplay] error.
-    async fn create(
-        &self,
-        log_id: &LogId,
-        first_event: &E,
-        create_options: &CreateOptions,
-    ) -> Result<(), EventStoreError>;
-
-    /// Appends another event to an existing log using the specified index.
+    /// Appends an event to a log at the specified index.
     ///
     /// If an event already exists with that same index, this returns an
     /// [EventStoreError::EventIndexAlreadyExists] error.
@@ -97,7 +85,7 @@ where
     async fn append(
         &self,
         log_id: &LogId,
-        next_event: &E,
+        event: &E,
         event_index: u32,
         append_options: &AppendOptions,
     ) -> Result<(), EventStoreError>;

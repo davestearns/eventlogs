@@ -1,7 +1,7 @@
 use crate::{
     ids::LogId,
     stores::{EventStore, EventStoreError},
-    AppendOptions, CreateOptions, EventRecord,
+    AppendOptions, EventRecord,
 };
 use chrono::Utc;
 use const_format::formatcp;
@@ -107,17 +107,19 @@ impl PostgresEventStore {
     pub fn new(pool: Pool) -> Self {
         PostgresEventStore { pool }
     }
+}
 
-    async fn insert<E>(
+impl<E> EventStore<E> for PostgresEventStore
+where
+    E: Serialize + DeserializeOwned + Debug + Send + Sync,
+{
+    async fn append(
         &self,
         log_id: &LogId,
         event: &E,
         event_index: u32,
-        idempotency_key: &Option<String>,
-    ) -> Result<(), EventStoreError>
-    where
-        E: Serialize + DeserializeOwned + Debug + Send + Sync,
-    {
+        append_options: &AppendOptions,
+    ) -> Result<(), EventStoreError> {
         let conn = self.pool.get().await?;
         let stmt = conn.prepare_cached(INSERT_EVENT).await?;
         let result = conn
@@ -127,7 +129,7 @@ impl PostgresEventStore {
                     &log_id.to_string(),
                     &event_index,
                     &Utc::now(),
-                    &idempotency_key,
+                    &append_options.idempotency_key,
                     &Json(event),
                 ],
             )
@@ -147,7 +149,7 @@ impl PostgresEventStore {
                     if dbe.constraint() == Some(IDEMPOTENCY_KEY_CONSTRAINT) {
                         // If we got a duplicate idempotency key error, idempotency_key
                         // should have Some value, but just to be safe...
-                        if let Some(key) = idempotency_key {
+                        if let Some(ref key) = append_options.idempotency_key {
                             // Find the event with that idempotency key
                             let query = conn
                                 .prepare_cached(SELECT_EVENT_FOR_IDEMPOTENCY_KEY)
@@ -165,37 +167,6 @@ impl PostgresEventStore {
         }
 
         Ok(result.map(|_| ())?)
-    }
-}
-
-impl<E> EventStore<E> for PostgresEventStore
-where
-    E: Serialize + DeserializeOwned + Debug + Send + Sync,
-{
-    async fn create(
-        &self,
-        log_id: &LogId,
-        first_event: &E,
-        create_options: &CreateOptions,
-    ) -> Result<(), EventStoreError> {
-        self.insert(log_id, first_event, 0, &create_options.idempotency_key)
-            .await
-    }
-
-    async fn append(
-        &self,
-        log_id: &LogId,
-        next_event: &E,
-        event_index: u32,
-        append_options: &AppendOptions,
-    ) -> Result<(), EventStoreError> {
-        self.insert(
-            log_id,
-            next_event,
-            event_index,
-            &append_options.idempotency_key,
-        )
-        .await
     }
 
     async fn load(
@@ -238,11 +209,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_load() {
+    async fn append_load() {
         let log_id = LogId::new();
         let store = store();
         store
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .append(&log_id, &TestEvent::Increment, 0, &AppendOptions::default())
             .await
             .unwrap();
 
@@ -251,11 +222,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_append_load() {
+    async fn append_multiple_load() {
         let log_id = LogId::new();
         let store = store();
         store
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .append(&log_id, &TestEvent::Increment, 0, &AppendOptions::default())
             .await
             .unwrap();
 
@@ -278,19 +249,19 @@ mod tests {
         let log_id = LogId::new();
         let store = store();
         let idempotency_key = Uuid::now_v7().to_string();
-        let create_options = CreateOptions {
+        let options = AppendOptions {
             idempotency_key: Some(idempotency_key.clone()),
             ..Default::default()
         };
 
         store
-            .create(&log_id, &TestEvent::Increment, &create_options)
+            .append(&log_id, &TestEvent::Increment, 0, &options)
             .await
             .unwrap();
 
         let replay_log_id = LogId::new();
         let result = store
-            .create(&replay_log_id, &TestEvent::Increment, &create_options)
+            .append(&replay_log_id, &TestEvent::Increment, 0, &options)
             .await;
 
         assert_eq!(
@@ -308,7 +279,7 @@ mod tests {
         let log_id = LogId::new();
         let store = store();
         store
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .append(&log_id, &TestEvent::Increment, 0, &AppendOptions::default())
             .await
             .unwrap();
 
@@ -335,23 +306,23 @@ mod tests {
         let log_id = LogId::new();
         let store = store();
         let idempotency_key = Uuid::now_v7().to_string();
-        let append_options = AppendOptions {
+        let options = AppendOptions {
             idempotency_key: Some(idempotency_key.clone()),
             ..Default::default()
         };
 
         store
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .append(&log_id, &TestEvent::Increment, 0, &AppendOptions::default())
             .await
             .unwrap();
 
         store
-            .append(&log_id, &TestEvent::Decrement, 1, &append_options)
+            .append(&log_id, &TestEvent::Decrement, 1, &options)
             .await
             .unwrap();
 
         let result = store
-            .append(&log_id, &TestEvent::Decrement, 2, &append_options)
+            .append(&log_id, &TestEvent::Decrement, 2, &options)
             .await;
 
         assert_eq!(

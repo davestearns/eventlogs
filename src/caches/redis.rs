@@ -32,7 +32,7 @@ impl ToRedisArgs for LogId {
     }
 }
 
-/// An [ReductionCache] backed by a redis server/cluster.
+/// A [ReductionCache] backed by a redis server/cluster.
 pub struct RedisReductionCache<S> {
     pool: Pool,
     serde: S,
@@ -41,7 +41,7 @@ pub struct RedisReductionCache<S> {
 
 impl<S> RedisReductionCache<S> {
     /// Constructs a new instance given a pre-configured deadpool_redis Pool,
-    /// an [ReductionCacheSerde], and an optional time-to-live for items
+    /// a [ReductionCacheSerde], and an optional time-to-live for items
     /// written to the cache.
     pub fn new(pool: Pool, serde: S, ttl: Option<TimeDelta>) -> Self {
         Self {

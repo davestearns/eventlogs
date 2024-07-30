@@ -39,9 +39,9 @@ impl PartialEq for ReductionCacheError {
 /// The trait implemented by all reduction caches.
 #[trait_variant::make(Send)]
 pub trait ReductionCache<A> {
-    /// Puts an [Reduction] into the cache.
+    /// Puts a [Reduction] into the cache.
     async fn put(&self, reduction: &Reduction<A>) -> Result<(), ReductionCacheError>;
-    /// Gets an [Reduction] from the cache.
+    /// Gets a [Reduction] from the cache.
     async fn get(&self, log_id: &LogId) -> Result<Option<Reduction<A>>, ReductionCacheError>;
 }
 
@@ -50,8 +50,8 @@ pub trait ReductionCache<A> {
 /// implement these methods for any [serde] format you want, or you can use
 /// something like protobuf, flatbuffers, or even rkyv.
 pub trait ReductionCacheSerde<A> {
-    /// Serializes an [Reduction] into bytes.
+    /// Serializes a [Reduction] into bytes.
     fn serialize(&self, reduction: &Reduction<A>) -> Result<Vec<u8>, impl Error + 'static>;
-    /// Deserializes a slice of bytes into an [Reduction].
+    /// Deserializes a slice of bytes into a [Reduction].
     fn deserialize(&self, buf: &[u8]) -> Result<Reduction<A>, impl Error + 'static>;
 }
