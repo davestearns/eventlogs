@@ -21,6 +21,7 @@ This is a batteries-included library that offers features one typically needs in
 - **Concurrency:** If multiple service instances attempt to append a new event to the same log at the same time, only one will win the race, and the others will receive an error. The losers can then re-reduce the log to see the effect of the new event on the aggregate, determine if their operation is still relevant, and try again.
 - **Async Aggregate Caching:** When you reduce a log, the resulting aggregate is written asynchronously to a cache like Redis. Subsequent calls to `reduce()` will reuse that cached aggregate, and only fetch/apply events that were recorded _after_ the aggregate was last calculated. This makes subsequent reductions faster without slowing down your code.
 - **Caching Policies:** Aggregates are always cached by default, but if you want to control when this occurs based on aggregate properties, you can provide an implementation of `CachingPolicy`. For example, if the state of the aggregates tells you that it will never be loaded again, you can skip caching it.
+- **Event Streaming and Paging:** When reducing, events are asynchronously streamed from the database instead of buffered to limit the amount of memory consumed. But the library also offers a method you can use to get a page of events at a time as a `Vector`, which makes it easier to return them as a JSON array from your service's API.
 
 ## Example Usage
 ```rust
