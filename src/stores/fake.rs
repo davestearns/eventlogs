@@ -126,6 +126,7 @@ where
         &self,
         log_id: &LogId,
         starting_index: u32,
+        max_events: u32,
     ) -> Result<impl Stream<Item = Result<impl EventRecord<E>, EventStoreError>>, EventStoreError>
     {
         let db = self.mx_db.lock().await;
@@ -133,7 +134,9 @@ where
             if let Some(v) = db.log_id_to_events.get(log_id) {
                 v.iter()
                     .filter(|e| e.index >= starting_index)
-                    .map(|e| Ok(e.clone()))
+                    .take(max_events as usize)
+                    .cloned()
+                    .map(Ok)
                     .collect()
             } else {
                 vec![]
@@ -144,6 +147,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::u32;
+
     use futures_util::StreamExt;
     use uuid::Uuid;
 
@@ -159,7 +164,7 @@ mod tests {
             .append(&log_id, &TestEvent::Increment, 0, &AppendOptions::default())
             .await
             .unwrap();
-        let row_stream = store.load(&log_id, 0).await.unwrap();
+        let row_stream = store.load(&log_id, 0, u32::MAX).await.unwrap();
         assert_eq!(row_stream.count().await, 1);
     }
 
@@ -177,7 +182,7 @@ mod tests {
             .await
             .unwrap();
 
-        let row_stream = store.load(&log_id, 0).await.unwrap();
+        let row_stream = store.load(&log_id, 0, u32::MAX).await.unwrap();
         assert_eq!(row_stream.count().await, 2);
     }
 
@@ -270,7 +275,22 @@ mod tests {
         );
 
         // ...and there should only be 2 events in the log
-        let row_stream = store.load(&log_id, 0).await.unwrap();
+        let row_stream = store.load(&log_id, 0, u32::MAX).await.unwrap();
         assert_eq!(row_stream.count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn load_limit() {
+        let log_id = LogId::new();
+        let store = FakeEventStore::<TestEvent>::new();
+        for i in 0..15 {
+            store
+                .append(&log_id, &TestEvent::Increment, i, &AppendOptions::default())
+                .await
+                .unwrap();
+        }
+        
+        let event_stream = store.load(&log_id, 0, 10).await.unwrap();
+        assert_eq!(event_stream.count().await, 10);
     }
 }

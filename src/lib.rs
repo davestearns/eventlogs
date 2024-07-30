@@ -2,7 +2,6 @@
 use crate::stores::EventStore;
 use caches::{ReductionCache, ReductionCacheError};
 use chrono::{DateTime, Utc};
-use futures_util::Stream;
 use futures_util::TryStreamExt;
 pub use ids::LogId;
 use policies::{CachingPolicy, NoPolicy};
@@ -370,7 +369,10 @@ where
             .map(|re| (re.aggregate, re.through_index + 1))
             .unwrap_or((A::default(), 0));
 
-        let event_stream = self.event_store.load(log_id, starting_index).await?;
+        let event_stream = self
+            .event_store
+            .load(log_id, starting_index, u32::MAX)
+            .await?;
         let reduction = Reduction {
             log_id: log_id.clone(),
             reduced_at: Utc::now(),
@@ -399,11 +401,15 @@ where
         &'a self,
         log_id: &'a LogId,
         starting_index: u32,
-    ) -> Result<
-        impl Stream<Item = Result<impl EventRecord<E> + 'a, EventStoreError>>,
-        LogManagerError,
-    > {
-        Ok(self.event_store.load(log_id, starting_index).await?)
+        max_events: u32,
+    ) -> Result<Vec<impl EventRecord<E> + 'a>, LogManagerError> {
+        let row_stream = self
+            .event_store
+            .load(log_id, starting_index, max_events)
+            .await?;
+
+        let events = row_stream.try_collect().await?;
+        Ok(events)
     }
 }
 
@@ -484,15 +490,12 @@ mod tests {
         .await
         .unwrap();
 
-        let event_stream = mgr.load(&log_id, 0).await.unwrap();
-        tokio::pin!(event_stream);
-        let mut expected_index: u32 = 0;
-        while let Some(event_record) = event_stream.try_next().await.unwrap() {
-            assert_eq!(event_record.index(), expected_index);
-            assert_eq!(event_record.event(), TestEvent::Increment);
-            expected_index += 1
+        let events = mgr.load(&log_id, 0, 100).await.unwrap();
+        assert_eq!(events.len(), 2);
+        for (idx, evt) in events.iter().enumerate() {
+            assert_eq!(evt.index() as usize, idx);
+            assert_eq!(evt.event(), TestEvent::Increment)
         }
-        assert_eq!(expected_index, 2);
     }
 
     #[tokio::test]

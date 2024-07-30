@@ -24,7 +24,8 @@ const COLUMN_LIST: &str = "log_id,event_index,recorded_at,idempotency_key,payloa
 const SELECT_EVENTS: &str = formatcp!(
     "select {COLUMN_LIST} from {QUALIFIED_TABLE_NAME} 
     where log_id = $1 and event_index >= $2
-    order by log_id, event_index"
+    order by log_id, event_index
+    limit $3"
 );
 const INSERT_EVENT: &str =
     formatcp!("insert into {QUALIFIED_TABLE_NAME} ({COLUMN_LIST}) values ($1,$2,$3,$4,$5)");
@@ -173,6 +174,7 @@ where
         &self,
         log_id: &LogId,
         starting_index: u32,
+        max_events: u32,
     ) -> Result<
         impl futures_util::Stream<Item = Result<impl EventRecord<E>, EventStoreError>>,
         EventStoreError,
@@ -181,7 +183,9 @@ where
         let stmt = conn.prepare_cached(SELECT_EVENTS).await?;
 
         let log_id_param = log_id.to_string();
-        let params: Vec<&(dyn ToSql + Sync)> = vec![&log_id_param, &starting_index];
+        // for some reason postgres won't accept a u32 for a limit value
+        let limit_param = max_events as i64;
+        let params: Vec<&(dyn ToSql + Sync)> = vec![&log_id_param, &starting_index, &limit_param];
         let row_stream = conn.query_raw(&stmt, params).await?;
 
         Ok(row_stream.map_err(|e| EventStoreError::DatabaseError { error: Box::new(e) }))
@@ -217,7 +221,7 @@ mod tests {
             .await
             .unwrap();
 
-        let row_stream = store.load(&log_id, 0).await.unwrap();
+        let row_stream = store.load(&log_id, 0, u32::MAX).await.unwrap();
         assert_eq!(row_stream.count().await, 1);
     }
 
@@ -240,7 +244,7 @@ mod tests {
             .await
             .unwrap();
 
-        let row_stream = store.load(&log_id, 0).await.unwrap();
+        let row_stream = store.load(&log_id, 0, u32::MAX).await.unwrap();
         assert_eq!(row_stream.count().await, 3);
     }
 
@@ -335,7 +339,21 @@ mod tests {
         );
 
         //ensure this log only has 2 events
-        let row_stream = store.load(&log_id, 0).await.unwrap();
+        let row_stream = store.load(&log_id, 0, u32::MAX).await.unwrap();
         assert_eq!(row_stream.count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn load_limit() {
+        let log_id = LogId::new();
+        let store = store();
+        for i in 0..10 {
+            store
+                .append(&log_id, &TestEvent::Increment, i, &AppendOptions::default())
+                .await
+                .unwrap();
+        }
+        let row_stream = store.load(&log_id, 0, 5).await.unwrap();
+        assert_eq!(row_stream.count().await, 5);
     }
 }

@@ -97,5 +97,6 @@ where
         &self,
         log_id: &LogId,
         starting_index: u32,
+        max_events: u32,
     ) -> Result<impl Stream<Item = Result<impl EventRecord<E>, EventStoreError>>, EventStoreError>;
 }
