@@ -2,6 +2,7 @@
 use crate::stores::EventStore;
 use caches::{ReductionCache, ReductionCacheError};
 use chrono::{DateTime, Utc};
+use futures_util::Stream;
 use futures_util::TryStreamExt;
 pub use ids::LogId;
 use policies::{CachingPolicy, NoPolicy};
@@ -330,12 +331,12 @@ where
         &self,
         log_id: &LogId,
         log_state: impl Into<LogState>,
-        next_event: &E,
+        event: &E,
         append_options: &AppendOptions,
     ) -> Result<LogState, LogManagerError> {
         let next_index = log_state.into().next_index;
         self.event_store
-            .append(log_id, next_event, next_index, append_options)
+            .append(log_id, event, next_index, append_options)
             .await
             .map_err(|e| match e {
                 // If the event index already exists, there was a concurrent append
@@ -369,10 +370,10 @@ where
             .map(|re| (re.aggregate, re.through_index + 1))
             .unwrap_or((A::default(), 0));
 
-        let row_stream = self.event_store.load(log_id, starting_index).await?;
+        let event_stream = self.event_store.load(log_id, starting_index).await?;
         let mut through_index = 0;
-        tokio::pin!(row_stream);
-        while let Some(event_record) = row_stream.try_next().await? {
+        tokio::pin!(event_stream);
+        while let Some(event_record) = event_stream.try_next().await? {
             aggregate.apply(&event_record);
             if event_record.index() > through_index {
                 through_index = event_record.index();
@@ -391,6 +392,19 @@ where
         // TODO: add tracing/metrics if this fails.
         let _ = self.reduction_sender.try_send(reduction.clone());
         Ok(reduction)
+    }
+
+    /// Returns an asynchronous stream of [EventRecord]s from the specified log,
+    /// starting at the `starting_index`.
+    pub async fn load<'a>(
+        &'a self,
+        log_id: &'a LogId,
+        starting_index: u32,
+    ) -> Result<
+        impl Stream<Item = Result<impl EventRecord<E> + 'a, EventStoreError>>,
+        LogManagerError,
+    > {
+        Ok(self.event_store.load(log_id, starting_index).await?)
     }
 }
 
@@ -450,6 +464,36 @@ mod tests {
         assert_eq!(reduction.log_id(), &log_id);
         assert_eq!(reduction.through_index(), 0);
         assert_eq!(reduction.aggregate().count, 1);
+    }
+
+    #[tokio::test]
+    async fn create_append_load() {
+        let mgr = log_manager();
+
+        let log_id = LogId::new();
+        let log_state = mgr
+            .create(&log_id, &TestEvent::Increment, &AppendOptions::default())
+            .await
+            .unwrap();
+
+        mgr.append(
+            &log_id,
+            log_state,
+            &TestEvent::Increment,
+            &AppendOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let event_stream = mgr.load(&log_id, 0).await.unwrap();
+        tokio::pin!(event_stream);
+        let mut expected_index: u32 = 0;
+        while let Some(event_record) = event_stream.try_next().await.unwrap() {
+            assert_eq!(event_record.index(), expected_index);
+            assert_eq!(event_record.event(), TestEvent::Increment);
+            expected_index += 1
+        }
+        assert_eq!(expected_index, 2);
     }
 
     #[tokio::test]
