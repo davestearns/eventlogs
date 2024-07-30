@@ -366,31 +366,30 @@ where
     /// policy allows it. By default, all reductions will be cached.
     pub async fn reduce(&self, log_id: &LogId) -> Result<Reduction<A>, LogManagerError> {
         let maybe_reduction = self.reduction_cache.get(log_id).await?;
-        let (mut aggregate, starting_index) = maybe_reduction
+        let (aggregate, starting_index) = maybe_reduction
             .map(|re| (re.aggregate, re.through_index + 1))
             .unwrap_or((A::default(), 0));
 
         let event_stream = self.event_store.load(log_id, starting_index).await?;
-        let mut through_index = 0;
-        tokio::pin!(event_stream);
-        while let Some(event_record) = event_stream.try_next().await? {
-            aggregate.apply(&event_record);
-            if event_record.index() > through_index {
-                through_index = event_record.index();
-            }
-        }
-
         let reduction = Reduction {
             log_id: log_id.clone(),
             reduced_at: Utc::now(),
-            through_index,
+            through_index: 0,
             aggregate,
         };
 
-        // try to send the reduction, but ignore errors since this is really
-        // just an optimization.
-        // TODO: add tracing/metrics if this fails.
-        let _ = self.reduction_sender.try_send(reduction.clone());
+        let reduction = event_stream
+            .try_fold(reduction, |mut r, e| async move {
+                r.aggregate.apply(&e);
+                r.through_index = std::cmp::max(r.through_index, e.index());
+                Ok(r)
+            })
+            .await?;
+
+        // send the reduction to the async cache put task, but fail open.
+        // TODO: emit a metric when this fails
+        let _ = self.reduction_sender.send(reduction.clone()).await;
+
         Ok(reduction)
     }
 
