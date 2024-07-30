@@ -58,8 +58,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // to point to your servers/clusters.
     let log_manager = LogManager::new(
         FakeEventStore::<TestEvent>::new(),
-        FakeAggregationCache::<TestAggregate>::new(),
-        LogManagerOptions::none(),
+        FakeAggregationCache::<TestAggregate>::new()
     );
     
     // Create a new log with an Increment event as the first event.
