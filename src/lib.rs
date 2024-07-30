@@ -316,7 +316,7 @@ pub trait AggregationCachingPolicy<A>: Debug + Send + Sync + 'static {
 /// This will continue to compile even if more fields are added in the
 /// future, as their types will always implement [Default].
 #[derive(Debug, Default)]
-pub struct LogManagerOptions<ACP = NoPolicy> {
+pub struct LogManagerOptions<ACP> {
     pub aggregation_caching_policy: Option<ACP>,
 }
 

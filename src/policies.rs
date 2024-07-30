@@ -90,7 +90,7 @@ impl<A> AggregationCachingPolicy<A> for LogAgePolicy {
 
 /// An [AggregationCachingPolicy] that always caches.
 ///
-/// This is mostly used as a default type for easier type-inference.
+/// This is mostly used to make the type inference more clear.
 #[derive(Debug, Default)]
 pub struct NoPolicy;
 impl<A> AggregationCachingPolicy<A> for NoPolicy {
