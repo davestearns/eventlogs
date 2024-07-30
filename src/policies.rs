@@ -1,6 +1,12 @@
+use crate::Reduction;
 use chrono::{TimeDelta, Utc};
+use std::fmt::Debug;
 
-use crate::{CachingPolicy, Reduction};
+/// Implemented by policies that control if a given [Reduction] gets cached.
+pub trait CachingPolicy<A>: Debug + Send + Sync + 'static {
+    /// Returns true if the [Reduction] should be cached, false if not.
+    fn should_cache(&self, reduction: &Reduction<A>) -> bool;
+}
 
 /// An [CachingPolicy] that caches [Reduction]s
 /// based on the number of events they have aggregated.

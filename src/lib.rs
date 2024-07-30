@@ -4,7 +4,7 @@ use caches::{ReductionCache, ReductionCacheError};
 use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
 pub use ids::LogId;
-use policies::NoPolicy;
+use policies::{CachingPolicy, NoPolicy};
 use serde::{Deserialize, Serialize};
 use std::{fmt::Debug, marker::PhantomData, sync::Arc};
 use stores::EventStoreError;
@@ -170,12 +170,6 @@ pub struct AppendOptions {
     /// only once, regardless of retries after network timeouts or other
     /// communication failures.
     pub idempotency_key: Option<String>,
-}
-
-/// Implemented by policies that control if a given [Reduction] gets cached.
-pub trait CachingPolicy<A>: Debug + Send + Sync + 'static {
-    /// Returns true if the [Reduction] should be cached, false if not.
-    fn should_cache(&self, reduction: &Reduction<A>) -> bool;
 }
 
 /// Options that can be used when constructing a [LogManager].
