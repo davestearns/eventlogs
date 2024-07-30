@@ -196,16 +196,18 @@ pub struct LogManagerOptions<ACP> {
     pub aggregation_caching_policy: Option<ACP>,
 }
 
+/// Represents the known state of the log after a create or append operation.
+///
+/// This must be passed back to the next append() method.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct LogState {
     last_index: u32,
 }
 
+/// Converts an Aggregation into a LogState by calling [Aggregation::log_state].
 impl<A> From<Aggregation<A>> for LogState {
     fn from(value: Aggregation<A>) -> Self {
-        LogState {
-            last_index: value.through_index,
-        }
+        value.log_state()
     }
 }
 
@@ -355,7 +357,12 @@ where
         Ok(aggregation)
     }
 
-    /// Appends another event to an existing log identified by the [Aggregation].
+    /// Appends another event to an existing log.
+    ///
+    /// The `log_state` argument can be either a [LogState] returned from the
+    /// previous create/append call, or an [Aggregation] returned from a previous
+    /// reduce call. This is what tells the manager what the next event index
+    /// should be without requiring an extra query to the database.
     ///
     /// If multiple processes race to append an event to the same log, only one will
     /// win and the others will get a [LogManagerError::ConcurrentAppend] error.
@@ -477,16 +484,16 @@ mod tests {
         let mgr = log_manager();
 
         let log_id = LogId::new();
-        let mut outcome = mgr
+        let mut log_state = mgr
             .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
 
         for _i in 0..10 {
-            outcome = mgr
+            log_state = mgr
                 .append(
                     &log_id,
-                    outcome,
+                    log_state,
                     &TestEvent::Increment,
                     &AppendOptions::default(),
                 )
@@ -508,8 +515,7 @@ mod tests {
         );
 
         let log_id = LogId::new();
-        let outcome = mgr
-            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
 
@@ -538,7 +544,7 @@ mod tests {
 
         mgr.append(
             &log_id,
-            outcome,
+            agg.clone(),
             &TestEvent::Decrement,
             &AppendOptions::default(),
         )
@@ -603,7 +609,7 @@ mod tests {
         let mgr = log_manager();
 
         let log_id = LogId::new();
-        let outcome = mgr
+        let log_state = mgr
             .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
@@ -614,8 +620,8 @@ mod tests {
             ..Default::default()
         };
 
-        let outcome = mgr
-            .append(&log_id, outcome, &TestEvent::Decrement, &append_options)
+        let log_state = mgr
+            .append(&log_id, log_state, &TestEvent::Decrement, &append_options)
             .await
             .unwrap();
 
@@ -624,7 +630,7 @@ mod tests {
         assert_eq!(agg.aggregate().count, 0);
 
         let result = mgr
-            .append(&log_id, outcome, &TestEvent::Decrement, &append_options)
+            .append(&log_id, log_state, &TestEvent::Decrement, &append_options)
             .await;
 
         assert_eq!(
@@ -646,14 +652,14 @@ mod tests {
         let mgr = log_manager();
 
         let log_id = LogId::new();
-        let outcome = mgr
+        let log_state = mgr
             .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
 
         mgr.append(
             &log_id,
-            outcome.clone(),
+            log_state.clone(),
             &TestEvent::Decrement,
             &AppendOptions::default(),
         )
@@ -663,7 +669,7 @@ mod tests {
         let result = mgr
             .append(
                 &log_id,
-                outcome,
+                log_state,
                 &TestEvent::Decrement,
                 &AppendOptions::default(),
             )

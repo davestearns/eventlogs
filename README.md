@@ -72,14 +72,18 @@ async fn main() -> Result<(), Box<dyn Error>> {
     };
     let log_id = LogId::new();
     log_manager.create(&log_id, &TestEvent::Increment, &create_options).await?;
-    
-    // Reduce the log to get the current state. The TestAggregate
-    // will be cached automatically on a background task, so it won't
-    // slow down your code.
+
+    // Now let's say our service gets another request. In order to process
+    // it, we need to know the current state of the transaction (the Aggregate).
+    // Use the reduce() method to reduce the events into an Aggregation, which
+    // contains our TestAggregate with current state. The Aggregation will be
+    // cached automatically by a background task, so it won't slow down our
+    // main code.
     let aggregation = log_manager.reduce(&log_id).await?;
     assert_eq!(aggregation.aggregate().count, 1);
 
-    // Append another event, this time a Decrement.
+    // Let's say that the Aggregate's current state allows the operation, and
+    // this time we want to append a Decrement event.
     // If another process is racing with this one, only one will
     // successfully append, and the other will get a ConcurrentAppend
     // error. And idempotency keys may also be provided in the AppendOptions.
