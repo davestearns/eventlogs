@@ -78,8 +78,7 @@
 //!     // to point to your servers/clusters.
 //!     let log_manager = LogManager::new(
 //!         FakeEventStore::<TestEvent>::new(),
-//!         FakeAggregationCache::<TestAggregate>::new(),
-//!         LogManagerOptions::none(),
+//!         FakeAggregationCache::<TestAggregate>::new()
 //!     );
 //!     
 //!     // Create a new log with an Increment event as the first event.
@@ -146,7 +145,7 @@ use tokio::sync::mpsc::{self, Sender};
 pub mod caches;
 /// Home of the [LogId] struct.
 pub mod ids;
-/// The [AggregationCachingPolicy] trait and a few generic implementations.
+/// A few common implementations of the [AggregationCachingPolicy] trait.
 pub mod policies;
 /// The [EventStore] trait and implementations.
 pub mod stores;
@@ -321,22 +320,6 @@ pub struct LogManagerOptions<ACP = NoPolicy> {
     pub aggregation_caching_policy: Option<ACP>,
 }
 
-impl LogManagerOptions {
-    /// Returns an instance with all fields set to defaults.
-    ///
-    /// This exists to overcome a [frustrating limitation in rust
-    /// type-inference](https://www.reddit.com/r/rust/comments/ek6w5g/default_generic_type_inference/)
-    /// when implementing or deriving [Default] on a type that has generic type
-    /// parameters with defaults types. Instead of having to write
-    /// `<LogManagerOptions>::default()`, you can use `LogManagerOptions::none()`
-    /// instead.
-    pub fn none() -> Self {
-        Self {
-            aggregation_caching_policy: None,
-        }
-    }
-}
-
 /// Manages logs with given Event and [Aggregate] types, stored in an [EventStore],
 /// and cached in an [AggregationCache], optionally controlled by an
 /// [AggregationCachingPolicy].
@@ -345,25 +328,47 @@ impl LogManagerOptions {
 /// system, create a separate [LogManager] for each, though you can share the
 /// same [EventStore] and [AggregationCache] since [LogId]s are universally unique.
 #[derive(Debug)]
-pub struct LogManager<E, A, ES, AC, ACP = NoPolicy> {
+pub struct LogManager<E, A, ES, AC> {
     event_store: ES,
     aggregation_cache: Arc<AC>,
     aggregation_sender: Sender<Aggregation<A>>,
     _phantom_e: PhantomData<E>,
-    _phantom_acp: PhantomData<ACP>,
 }
 
-impl<E, A, ES, AC, ACP> LogManager<E, A, ES, AC, ACP>
+impl<E, A, ES, AC> LogManager<E, A, ES, AC>
 where
     E: Send + 'static,
     A: Aggregate<Event = E> + Send + Clone + 'static,
     ES: EventStore<E>,
     AC: AggregationCache<A> + Send + Sync + 'static,
-    ACP: AggregationCachingPolicy<A> + Send + Sync + 'static,
 {
+    /// Constructs a new [LogManager] that uses the provided [EventStore] and [AggregationCache]
+    /// with default [LogManagerOptions].
+    pub fn new(event_store: ES, aggregation_cache: AC) -> Self {
+        Self::with_options::<NoPolicy>(event_store, aggregation_cache, LogManagerOptions::default())
+    }
+
     /// Constructs a new [LogManager] that uses the provided [EventStore], [AggregationCache],
-    /// and options.
-    pub fn new(event_store: ES, aggregation_cache: AC, options: LogManagerOptions<ACP>) -> Self {
+    /// and [LogManagerOptions].
+    ///
+    /// To protect yourself against the addition of more fields to [LogManagerOptions]
+    /// in the future, add `..Default::default()` to the end of the initialization:
+    /// ```
+    /// # use eventlogs::{LogManagerOptions, policies::LogLengthPolicy};
+    /// let options = LogManagerOptions {
+    ///     // only cache logs with 10 events or more
+    ///     aggregation_caching_policy: Some(LogLengthPolicy::at_least(10)),
+    ///     ..Default::default()
+    /// };
+    /// ```
+    pub fn with_options<ACP>(
+        event_store: ES,
+        aggregation_cache: AC,
+        options: LogManagerOptions<ACP>,
+    ) -> Self
+    where
+        ACP: AggregationCachingPolicy<A> + Send + Sync + 'static,
+    {
         let cache_arc = Arc::new(aggregation_cache);
         let cloned_cache_arc = cache_arc.clone();
         let (sender, mut receiver) = mpsc::channel::<Aggregation<A>>(1024);
@@ -391,7 +396,6 @@ where
             aggregation_cache: cache_arc,
             aggregation_sender: sender,
             _phantom_e: PhantomData,
-            _phantom_acp: PhantomData,
         }
     }
 
@@ -562,7 +566,6 @@ mod tests {
         LogManager::new(
             FakeEventStore::<TestEvent>::new(),
             FakeAggregationCache::<TestAggregate>::new(),
-            LogManagerOptions::default(),
         )
     }
 
@@ -588,7 +591,6 @@ mod tests {
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
             FakeAggregationCache::<TestAggregate>::with_notifications(sender),
-            LogManagerOptions::none(),
         );
 
         let log_id = LogId::new();
@@ -759,7 +761,7 @@ mod tests {
     async fn log_length_caching_policy() {
         let (sender, mut receiver) =
             tokio::sync::mpsc::channel::<FakeAggregationCacheOp<TestAggregate>>(64);
-        let mgr = LogManager::new(
+        let mgr = LogManager::with_options(
             FakeEventStore::<TestEvent>::new(),
             FakeAggregationCache::<TestAggregate>::with_notifications(sender),
             LogManagerOptions {
