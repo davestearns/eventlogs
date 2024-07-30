@@ -4,8 +4,7 @@
 
 This crate supports a style of transaction processing known as ["event sourcing."](https://martinfowler.com/eaaDev/EventSourcing.html) Instead of storing a single mutable record that is updated as the entity's state changes, event-sourcing systems record a series of immutable events about each entity, and reduce those events into a current state (known as an "aggregate") as needed. The event log for an entity provides a complete audit trail and makes it easier to record distinct properties about events that may occur multiple times (e.g., a task that is closed and re-opened multiple times).
 
-> [!CAUTION]
-> The crate is functional and unit tested, but hasn't been used in production yet, so use at your own risk!
+**Caution:** The crate is functional and tested, but hasn't been used in production yet, so use at your own risk! If you'd like to do a pilot, create a [tracking issue](https://github.com/davestearns/eventlogs/issues) on GitHub and I'll gladly help you.
 
 ## Built-In Features
 
@@ -95,3 +94,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 ```
+## Cargo Features
+
+This crate defines the following Cargo/compiler features:
+
+| Name | Description | Default? |
+|------|-------------|----------|
+| postgres-store | Enables the PostgresEventStore | Yes |
+| redis-cache | Enables the RedisAggregationCache | Yes |
+
+Since Postgres and Redis are very common choices, these features
+are on by default. As more `EventStore` and `AggregationCache`
+implementations are added in the future, corresponding non-default
+features will be defined.
