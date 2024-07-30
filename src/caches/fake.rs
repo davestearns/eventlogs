@@ -1,35 +1,35 @@
 use crate::{
-    caches::{AggregationCache, AggregationCacheError},
+    caches::{ReductionCache, ReductionCacheError},
     ids::LogId,
-    Aggregation,
+    Reduction,
 };
 use std::collections::HashMap;
 use tokio::sync::{mpsc::Sender, Mutex};
 
 #[derive(Debug, PartialEq)]
-pub enum FakeAggregationCacheOp<A: Clone + Send + Sync> {
+pub enum FakeReductionCacheOp<A: Clone + Send + Sync> {
     Get {
         log_id: LogId,
-        response: Option<Aggregation<A>>,
+        response: Option<Reduction<A>>,
     },
     Put {
-        aggregation: Aggregation<A>,
+        reduction: Reduction<A>,
     },
 }
 
 #[derive(Debug)]
 struct DB<A: Clone + Sync + Send> {
-    table: HashMap<LogId, Aggregation<A>>,
-    op_sender: Option<Sender<FakeAggregationCacheOp<A>>>,
+    table: HashMap<LogId, Reduction<A>>,
+    op_sender: Option<Sender<FakeReductionCacheOp<A>>>,
 }
 
-/// A fake implementation of [AggregationCache] that should only be used for testing.
+/// A fake implementation of [ReductionCache] that should only be used for testing.
 #[derive(Debug)]
-pub struct FakeAggregationCache<A: Clone + Send + Sync> {
+pub struct FakeReductionCache<A: Clone + Send + Sync> {
     mx_db: Mutex<DB<A>>,
 }
 
-impl<A> FakeAggregationCache<A>
+impl<A> FakeReductionCache<A>
 where
     A: Clone + Sync + Send,
 {
@@ -42,7 +42,7 @@ where
         }
     }
 
-    pub fn with_notifications(op_sender: Sender<FakeAggregationCacheOp<A>>) -> Self {
+    pub fn with_notifications(op_sender: Sender<FakeReductionCacheOp<A>>) -> Self {
         Self {
             mx_db: Mutex::new(DB {
                 table: HashMap::new(),
@@ -57,7 +57,7 @@ where
     }
 }
 
-impl<A> Default for FakeAggregationCache<A>
+impl<A> Default for FakeReductionCache<A>
 where
     A: Clone + Sync + Send,
 {
@@ -66,20 +66,20 @@ where
     }
 }
 
-impl<A> AggregationCache<A> for FakeAggregationCache<A>
+impl<A> ReductionCache<A> for FakeReductionCache<A>
 where
     A: Clone + Sync + Send,
 {
-    async fn put(&self, aggregation: &Aggregation<A>) -> Result<(), AggregationCacheError> {
+    async fn put(&self, reduction: &Reduction<A>) -> Result<(), ReductionCacheError> {
         let mut db = self.mx_db.lock().await;
 
         db.table
-            .insert(aggregation.log_id().clone(), aggregation.clone());
+            .insert(reduction.log_id().clone(), reduction.clone());
 
         if let Some(sender) = &db.op_sender {
             sender
-                .send(FakeAggregationCacheOp::Put {
-                    aggregation: aggregation.clone(),
+                .send(FakeReductionCacheOp::Put {
+                    reduction: reduction.clone(),
                 })
                 .await
                 .unwrap();
@@ -88,21 +88,21 @@ where
         Ok(())
     }
 
-    async fn get(&self, log_id: &LogId) -> Result<Option<Aggregation<A>>, AggregationCacheError> {
+    async fn get(&self, log_id: &LogId) -> Result<Option<Reduction<A>>, ReductionCacheError> {
         let db = self.mx_db.lock().await;
 
-        let maybe_aggregation = db.table.get(log_id).cloned();
+        let maybe_reduction = db.table.get(log_id).cloned();
 
         if let Some(sender) = &db.op_sender {
             sender
-                .send(FakeAggregationCacheOp::Get {
+                .send(FakeReductionCacheOp::Get {
                     log_id: log_id.clone(),
-                    response: maybe_aggregation.clone(),
+                    response: maybe_reduction.clone(),
                 })
                 .await
                 .unwrap();
         }
 
-        Ok(maybe_aggregation)
+        Ok(maybe_reduction)
     }
 }

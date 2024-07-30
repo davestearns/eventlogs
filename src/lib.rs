@@ -1,6 +1,6 @@
 #![doc = include_str!("../README.md")]
 use crate::stores::EventStore;
-use caches::{AggregationCache, AggregationCacheError};
+use caches::{ReductionCache, ReductionCacheError};
 use chrono::{DateTime, Utc};
 use futures_util::TryStreamExt;
 pub use ids::LogId;
@@ -11,11 +11,11 @@ use stores::EventStoreError;
 use thiserror::Error;
 use tokio::sync::mpsc::{self, Sender};
 
-/// The [AggregationCache] trait and implementations.
+/// The [ReductionCache] trait and implementations.
 pub mod caches;
 /// Home of the [LogId] struct.
 pub mod ids;
-/// A few common implementations of the [AggregationCachingPolicy] trait.
+/// A few common implementations of the [CachingPolicy] trait.
 pub mod policies;
 /// The [EventStore] trait and implementations.
 pub mod stores;
@@ -53,18 +53,18 @@ pub trait Aggregate: Default {
 
 /// Describes the result of a successful [LogManager::reduce] operation.
 ///
-/// This is what is stored in the [AggregationCache]. During subsequent
+/// This is what is stored in the [ReductionCache]. During subsequent
 /// reductions, the [LogManager] only selects the events with indexes
 /// higher than the `through_index`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Aggregation<A> {
+pub struct Reduction<A> {
     log_id: LogId,
     reduced_at: DateTime<Utc>,
     through_index: u32,
     aggregate: A,
 }
 
-impl<A> Aggregation<A> {
+impl<A> Reduction<A> {
     /// Returns the ID of the log that was reduced.
     pub fn log_id(&self) -> &LogId {
         &self.log_id
@@ -102,10 +102,10 @@ pub enum LogManagerError {
     /// Typically this will be a networking or database server error.
     #[error("the event store produced an unexpected error: {0}")]
     EventStoreError(#[from] EventStoreError),
-    /// Occurs when there is an unexpected error from the [AggregationCache].
+    /// Occurs when there is an unexpected error from the [ReductionCache].
     /// Typically this will be a networking or cache server error.
-    #[error("the aggregation cache produced an unexpected error: {0}")]
-    AggregationCacheError(#[from] AggregationCacheError),
+    #[error("the reduction cache produced an unexpected error: {0}")]
+    ReductionCacheError(#[from] ReductionCacheError),
     /// Occurs when two different processes race to append an event
     /// to the same log, and this process lost the race. When this occurs,
     /// you should re-reduce the log to see the effect of the other
@@ -113,7 +113,7 @@ pub enum LogManagerError {
     /// and if so, try the append operation again.
     #[error(
         "another process already appended another event to log_id={0} 
-        since your last aggregation; reduce again to apply the new event, 
+        since your last operation; reduce again to apply the new event, 
         determine if you operation is still relevant/necessary, and if so try again"
     )]
     ConcurrentAppend(LogId),
@@ -172,10 +172,10 @@ pub struct AppendOptions {
     pub idempotency_key: Option<String>,
 }
 
-/// Implemented by policies that control if a given [Aggregation] gets cached.
-pub trait AggregationCachingPolicy<A>: Debug + Send + Sync + 'static {
-    /// Returns true if the [Aggregation] should be cached, false if not.
-    fn should_cache(&self, aggregation: &Aggregation<A>) -> bool;
+/// Implemented by policies that control if a given [Reduction] gets cached.
+pub trait CachingPolicy<A>: Debug + Send + Sync + 'static {
+    /// Returns true if the [Reduction] should be cached, false if not.
+    fn should_cache(&self, reduction: &Reduction<A>) -> bool;
 }
 
 /// Options that can be used when constructing a [LogManager].
@@ -185,7 +185,7 @@ pub trait AggregationCachingPolicy<A>: Debug + Send + Sync + 'static {
 /// ```
 /// use eventlogs::{LogManagerOptions, policies::LogLengthPolicy};
 /// let options = LogManagerOptions {
-///     aggregation_caching_policy: Some(LogLengthPolicy::at_least(10)),
+///     caching_policy: Some(LogLengthPolicy::at_least(10)),
 ///     ..Default::default()
 /// };
 /// ```
@@ -193,7 +193,7 @@ pub trait AggregationCachingPolicy<A>: Debug + Send + Sync + 'static {
 /// future, as their types will always implement [Default].
 #[derive(Debug, Default)]
 pub struct LogManagerOptions<ACP> {
-    pub aggregation_caching_policy: Option<ACP>,
+    pub caching_policy: Option<ACP>,
 }
 
 /// Represents the known state of the log after a create or append operation.
@@ -204,25 +204,25 @@ pub struct LogState {
     last_index: u32,
 }
 
-/// Converts an Aggregation into a LogState by calling [Aggregation::log_state].
-impl<A> From<Aggregation<A>> for LogState {
-    fn from(value: Aggregation<A>) -> Self {
+/// Converts an [Reduction] into a [LogState] by calling [Reduction::log_state].
+impl<A> From<Reduction<A>> for LogState {
+    fn from(value: Reduction<A>) -> Self {
         value.log_state()
     }
 }
 
 /// Manages logs with given Event and [Aggregate] types, stored in an [EventStore],
-/// and cached in an [AggregationCache], optionally controlled by an
-/// [AggregationCachingPolicy].
+/// and cached in an [ReductionCache], optionally controlled by an
+/// [CachingPolicy].
 ///
 /// If you have multiple event/aggregate types in your
 /// system, create a separate [LogManager] for each, though you can share the
-/// same [EventStore] and [AggregationCache] since [LogId]s are universally unique.
+/// same [EventStore] and [ReductionCache] since [LogId]s are universally unique.
 #[derive(Debug)]
 pub struct LogManager<E, A, ES, AC> {
     event_store: ES,
-    aggregation_cache: Arc<AC>,
-    aggregation_sender: Sender<Aggregation<A>>,
+    reduction_cache: Arc<AC>,
+    reduction_sender: Sender<Reduction<A>>,
     _phantom_e: PhantomData<E>,
 }
 
@@ -231,15 +231,15 @@ where
     E: Send + 'static,
     A: Aggregate<Event = E> + Send + Clone + 'static,
     ES: EventStore<E>,
-    AC: AggregationCache<A> + Send + Sync + 'static,
+    AC: ReductionCache<A> + Send + Sync + 'static,
 {
-    /// Constructs a new [LogManager] that uses the provided [EventStore] and [AggregationCache]
+    /// Constructs a new [LogManager] that uses the provided [EventStore] and [ReductionCache]
     /// with default [LogManagerOptions].
-    pub fn new(event_store: ES, aggregation_cache: AC) -> Self {
-        Self::with_options::<NoPolicy>(event_store, aggregation_cache, LogManagerOptions::default())
+    pub fn new(event_store: ES, reduction_cache: AC) -> Self {
+        Self::with_options::<NoPolicy>(event_store, reduction_cache, LogManagerOptions::default())
     }
 
-    /// Constructs a new [LogManager] that uses the provided [EventStore], [AggregationCache],
+    /// Constructs a new [LogManager] that uses the provided [EventStore], [ReductionCache],
     /// and [LogManagerOptions].
     ///
     /// To protect yourself against the addition of more fields to [LogManagerOptions]
@@ -248,44 +248,44 @@ where
     /// # use eventlogs::{LogManagerOptions, policies::LogLengthPolicy};
     /// let options = LogManagerOptions {
     ///     // only cache logs with 10 events or more
-    ///     aggregation_caching_policy: Some(LogLengthPolicy::at_least(10)),
+    ///     caching_policy: Some(LogLengthPolicy::at_least(10)),
     ///     ..Default::default()
     /// };
     /// ```
     pub fn with_options<ACP>(
         event_store: ES,
-        aggregation_cache: AC,
+        reduction_cache: AC,
         options: LogManagerOptions<ACP>,
     ) -> Self
     where
-        ACP: AggregationCachingPolicy<A> + Send + Sync + 'static,
+        ACP: CachingPolicy<A> + Send + Sync + 'static,
     {
-        let cache_arc = Arc::new(aggregation_cache);
+        let cache_arc = Arc::new(reduction_cache);
         let cloned_cache_arc = cache_arc.clone();
-        let (sender, mut receiver) = mpsc::channel::<Aggregation<A>>(1024);
+        let (sender, mut receiver) = mpsc::channel::<Reduction<A>>(1024);
 
-        // Spawn a background task that reads from the aggregation receiver channel
-        // and updates the aggregation cache. This is used to update the cache asynchronously
+        // Spawn a background task that reads from the reduction receiver channel
+        // and updates the reduction cache. This is used to update the cache asynchronously
         // and optimistically, so the caller of reduce() doesn't have to wait at the end
         // of the reduce() method.
         tokio::spawn(async move {
-            while let Some(aggregation) = receiver.recv().await {
+            while let Some(reduction) = receiver.recv().await {
                 if options
-                    .aggregation_caching_policy
+                    .caching_policy
                     .as_ref()
-                    .map(|p| p.should_cache(&aggregation))
+                    .map(|p| p.should_cache(&reduction))
                     .unwrap_or(true)
                 {
                     // ignore errors since this is an async best-effort operation
-                    let _ = cloned_cache_arc.put(&aggregation).await;
+                    let _ = cloned_cache_arc.put(&reduction).await;
                 }
             }
         });
 
         Self {
             event_store,
-            aggregation_cache: cache_arc,
-            aggregation_sender: sender,
+            reduction_cache: cache_arc,
+            reduction_sender: sender,
             _phantom_e: PhantomData,
         }
     }
@@ -325,11 +325,11 @@ where
 
     /// Reduces the events in a given log to the configured [Aggregate].
     ///
-    /// The [Aggregation] will be cached asynchronously if the caching
-    /// policy allows it. By default, all aggregations will be cached.
-    pub async fn reduce(&self, log_id: &LogId) -> Result<Aggregation<A>, LogManagerError> {
-        let maybe_aggregation = self.aggregation_cache.get(log_id).await?;
-        let (mut aggregate, starting_index) = maybe_aggregation
+    /// The [Reduction] will be cached asynchronously if the caching
+    /// policy allows it. By default, all reductions will be cached.
+    pub async fn reduce(&self, log_id: &LogId) -> Result<Reduction<A>, LogManagerError> {
+        let maybe_reduction = self.reduction_cache.get(log_id).await?;
+        let (mut aggregate, starting_index) = maybe_reduction
             .map(|re| (re.aggregate, re.through_index + 1))
             .unwrap_or((A::default(), 0));
 
@@ -343,24 +343,24 @@ where
             }
         }
 
-        let aggregation = Aggregation {
+        let reduction = Reduction {
             log_id: log_id.clone(),
             reduced_at: Utc::now(),
             through_index,
             aggregate,
         };
 
-        // try to send the aggregation, but ignore errors since this is really
+        // try to send the reduction, but ignore errors since this is really
         // just an optimization.
         // TODO: add tracing/metrics if this fails.
-        let _ = self.aggregation_sender.try_send(aggregation.clone());
-        Ok(aggregation)
+        let _ = self.reduction_sender.try_send(reduction.clone());
+        Ok(reduction)
     }
 
     /// Appends another event to an existing log.
     ///
     /// The `log_state` argument can be either a [LogState] returned from the
-    /// previous create/append call, or an [Aggregation] returned from a previous
+    /// previous create/append call, or an [Reduction] returned from a previous
     /// reduce call. This is what tells the manager what the next event index
     /// should be without requiring an extra query to the database.
     ///
@@ -423,7 +423,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use caches::fake::{FakeAggregationCache, FakeAggregationCacheOp};
+    use caches::fake::{FakeReductionCache, FakeReductionCacheOp};
     use policies::LogLengthPolicy;
     use stores::fake::FakeEventStore;
     use uuid::Uuid;
@@ -456,11 +456,11 @@ mod tests {
         TestEvent,
         TestAggregate,
         FakeEventStore<TestEvent>,
-        FakeAggregationCache<TestAggregate>,
+        FakeReductionCache<TestAggregate>,
     > {
         LogManager::new(
             FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestAggregate>::new(),
+            FakeReductionCache::<TestAggregate>::new(),
         )
     }
 
@@ -508,10 +508,10 @@ mod tests {
     #[tokio::test]
     async fn cached_reduction_gets_used() {
         let (sender, mut receiver) =
-            tokio::sync::mpsc::channel::<FakeAggregationCacheOp<TestAggregate>>(64);
+            tokio::sync::mpsc::channel::<FakeReductionCacheOp<TestAggregate>>(64);
         let mgr = LogManager::new(
             FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestAggregate>::with_notifications(sender),
+            FakeReductionCache::<TestAggregate>::with_notifications(sender),
         );
 
         let log_id = LogId::new();
@@ -528,7 +528,7 @@ mod tests {
         let op = receiver.recv().await.unwrap();
         assert_eq!(
             op,
-            FakeAggregationCacheOp::Get {
+            FakeReductionCacheOp::Get {
                 log_id: log_id.clone(),
                 response: None
             }
@@ -537,8 +537,8 @@ mod tests {
         let op = receiver.recv().await.unwrap();
         assert_eq!(
             op,
-            FakeAggregationCacheOp::Put {
-                aggregation: agg.clone()
+            FakeReductionCacheOp::Put {
+                reduction: agg.clone()
             }
         );
 
@@ -560,7 +560,7 @@ mod tests {
         let op = receiver.recv().await.unwrap();
         assert_eq!(
             op,
-            FakeAggregationCacheOp::Get {
+            FakeReductionCacheOp::Get {
                 log_id: log_id.clone(),
                 response: Some(agg.clone()),
             }
@@ -569,8 +569,8 @@ mod tests {
         let op = receiver.recv().await.unwrap();
         assert_eq!(
             op,
-            FakeAggregationCacheOp::Put {
-                aggregation: re_agg.clone()
+            FakeReductionCacheOp::Put {
+                reduction: re_agg.clone()
             }
         );
     }
@@ -681,12 +681,12 @@ mod tests {
     #[tokio::test]
     async fn log_length_caching_policy() {
         let (sender, mut receiver) =
-            tokio::sync::mpsc::channel::<FakeAggregationCacheOp<TestAggregate>>(64);
+            tokio::sync::mpsc::channel::<FakeReductionCacheOp<TestAggregate>>(64);
         let mgr = LogManager::with_options(
             FakeEventStore::<TestEvent>::new(),
-            FakeAggregationCache::<TestAggregate>::with_notifications(sender),
+            FakeReductionCache::<TestAggregate>::with_notifications(sender),
             LogManagerOptions {
-                aggregation_caching_policy: Some(LogLengthPolicy::at_least(2)),
+                caching_policy: Some(LogLengthPolicy::at_least(2)),
             },
         );
 
@@ -704,7 +704,7 @@ mod tests {
         let op = receiver.recv().await.unwrap();
         assert_eq!(
             op,
-            FakeAggregationCacheOp::Get {
+            FakeReductionCacheOp::Get {
                 log_id: log_id.clone(),
                 response: None
             }
@@ -729,7 +729,7 @@ mod tests {
         let op = receiver.recv().await.unwrap();
         assert_eq!(
             op,
-            FakeAggregationCacheOp::Get {
+            FakeReductionCacheOp::Get {
                 log_id: log_id.clone(),
                 response: None
             }
@@ -738,8 +738,8 @@ mod tests {
         let op = receiver.recv().await.unwrap();
         assert_eq!(
             op,
-            FakeAggregationCacheOp::Put {
-                aggregation: second_agg.clone(),
+            FakeReductionCacheOp::Put {
+                reduction: second_agg.clone(),
             }
         );
     }

@@ -1,7 +1,7 @@
 use crate::{
-    caches::{AggregationCache, AggregationCacheError},
+    caches::{ReductionCache, ReductionCacheError},
     ids::LogId,
-    Aggregation,
+    Reduction,
 };
 use chrono::TimeDelta;
 use deadpool_redis::{
@@ -9,15 +9,15 @@ use deadpool_redis::{
     Pool, PoolError,
 };
 
-use super::AggregationCacheSerde;
+use super::ReductionCacheSerde;
 
-impl From<PoolError> for AggregationCacheError {
+impl From<PoolError> for ReductionCacheError {
     fn from(value: PoolError) -> Self {
         Self::DatabaseError(Box::new(value))
     }
 }
 
-impl From<RedisError> for AggregationCacheError {
+impl From<RedisError> for ReductionCacheError {
     fn from(value: RedisError) -> Self {
         Self::DatabaseError(Box::new(value))
     }
@@ -32,16 +32,16 @@ impl ToRedisArgs for LogId {
     }
 }
 
-/// An [AggregationCache] backed by a redis server/cluster.
-pub struct RedisAggregationCache<S> {
+/// An [ReductionCache] backed by a redis server/cluster.
+pub struct RedisReductionCache<S> {
     pool: Pool,
     serde: S,
     ttl: Option<TimeDelta>,
 }
 
-impl<S> RedisAggregationCache<S> {
+impl<S> RedisReductionCache<S> {
     /// Constructs a new instance given a pre-configured deadpool_redis Pool,
-    /// an [AggregationCacheSerde], and an optional time-to-live for items
+    /// an [ReductionCacheSerde], and an optional time-to-live for items
     /// written to the cache.
     pub fn new(pool: Pool, serde: S, ttl: Option<TimeDelta>) -> Self {
         Self {
@@ -52,33 +52,33 @@ impl<S> RedisAggregationCache<S> {
     }
 }
 
-impl<A, S> AggregationCache<A> for RedisAggregationCache<S>
+impl<A, S> ReductionCache<A> for RedisReductionCache<S>
 where
     A: Send + Sync,
-    S: AggregationCacheSerde<A> + Send + Sync,
+    S: ReductionCacheSerde<A> + Send + Sync,
 {
-    async fn put(&self, aggregation: &Aggregation<A>) -> Result<(), AggregationCacheError> {
+    async fn put(&self, reduction: &Reduction<A>) -> Result<(), ReductionCacheError> {
         let serialized = self
             .serde
-            .serialize(aggregation)
-            .map_err(|e| AggregationCacheError::EncodingFailure(Box::new(e)))?;
+            .serialize(reduction)
+            .map_err(|e| ReductionCacheError::EncodingFailure(Box::new(e)))?;
 
         let mut conn = self.pool.get().await?;
         if let Some(duration) = self.ttl {
             conn.set_ex(
-                aggregation.log_id(),
+                reduction.log_id(),
                 &serialized,
                 duration.num_seconds() as u64,
             )
             .await?;
         } else {
-            conn.set(aggregation.log_id(), &serialized).await?;
+            conn.set(reduction.log_id(), &serialized).await?;
         }
 
         Ok(())
     }
 
-    async fn get(&self, log_id: &LogId) -> Result<Option<Aggregation<A>>, AggregationCacheError> {
+    async fn get(&self, log_id: &LogId) -> Result<Option<Reduction<A>>, ReductionCacheError> {
         let mut conn = self.pool.get().await?;
 
         let maybe_bytes: Option<Vec<u8>> = if let Some(duration) = self.ttl {
@@ -89,11 +89,11 @@ where
         };
 
         if let Some(buf) = maybe_bytes {
-            let aggregation: Aggregation<A> = self
+            let reduction: Reduction<A> = self
                 .serde
                 .deserialize(&buf)
-                .map_err(|e| AggregationCacheError::DecodingFailure(Box::new(e)))?;
-            Ok(Some(aggregation))
+                .map_err(|e| ReductionCacheError::DecodingFailure(Box::new(e)))?;
+            Ok(Some(reduction))
         } else {
             Ok(None)
         }
@@ -112,26 +112,26 @@ mod tests {
     use super::*;
 
     struct JsonSerde;
-    impl AggregationCacheSerde<TestAggregate> for JsonSerde {
+    impl ReductionCacheSerde<TestAggregate> for JsonSerde {
         fn serialize(
             &self,
-            aggregation: &Aggregation<TestAggregate>,
+            reduction: &Reduction<TestAggregate>,
         ) -> Result<Vec<u8>, impl Error + 'static> {
-            serde_json::to_vec(aggregation)
+            serde_json::to_vec(reduction)
         }
 
         fn deserialize(
             &self,
             buf: &[u8],
-        ) -> Result<Aggregation<TestAggregate>, impl Error + 'static> {
+        ) -> Result<Reduction<TestAggregate>, impl Error + 'static> {
             serde_json::from_slice(buf)
         }
     }
 
-    fn cache() -> RedisAggregationCache<JsonSerde> {
+    fn cache() -> RedisReductionCache<JsonSerde> {
         let cgf = Config::from_url("redis://localhost");
         let pool = cgf.create_pool(Some(Runtime::Tokio1)).unwrap();
-        RedisAggregationCache::new(pool, JsonSerde, Some(TimeDelta::seconds(60)))
+        RedisReductionCache::new(pool, JsonSerde, Some(TimeDelta::seconds(60)))
     }
 
     #[tokio::test]
@@ -140,23 +140,23 @@ mod tests {
 
         let log_id = LogId::new();
         let test_aggregate = TestAggregate { count: 5 };
-        let aggregation = Aggregation {
+        let reduction = Reduction {
             log_id: log_id.clone(),
             reduced_at: Utc::now(),
             through_index: 1,
             aggregate: test_aggregate,
         };
 
-        cache.put(&aggregation).await.unwrap();
-        let maybe_aggregation = cache.get(&log_id).await.unwrap();
-        assert_eq!(Some(aggregation), maybe_aggregation);
+        cache.put(&reduction).await.unwrap();
+        let maybe_reduction = cache.get(&log_id).await.unwrap();
+        assert_eq!(Some(reduction), maybe_reduction);
     }
 
     #[tokio::test]
     async fn get_not_found() {
         let cache = cache();
-        let maybe_aggregation: Option<Aggregation<TestAggregate>> =
+        let maybe_reduction: Option<Reduction<TestAggregate>> =
             cache.get(&LogId::new()).await.unwrap();
-        assert_eq!(maybe_aggregation, None);
+        assert_eq!(maybe_reduction, None);
     }
 }
