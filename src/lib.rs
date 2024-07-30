@@ -87,6 +87,12 @@ impl<A> Aggregation<A> {
     pub fn aggregate(&self) -> &A {
         &self.aggregate
     }
+
+    pub fn log_state(&self) -> LogState {
+        LogState {
+            last_index: self.through_index,
+        }
+    }
 }
 
 /// The error type returned from all [LogManager] methods.
@@ -190,6 +196,19 @@ pub struct LogManagerOptions<ACP> {
     pub aggregation_caching_policy: Option<ACP>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct LogState {
+    last_index: u32,
+}
+
+impl<A> From<Aggregation<A>> for LogState {
+    fn from(value: Aggregation<A>) -> Self {
+        LogState {
+            last_index: value.through_index,
+        }
+    }
+}
+
 /// Manages logs with given Event and [Aggregate] types, stored in an [EventStore],
 /// and cached in an [AggregationCache], optionally controlled by an
 /// [AggregationCachingPolicy].
@@ -282,7 +301,7 @@ where
         log_id: &LogId,
         first_event: &E,
         create_options: &CreateOptions,
-    ) -> Result<(), LogManagerError> {
+    ) -> Result<LogState, LogManagerError> {
         self.event_store
             .create(log_id, first_event, create_options)
             .await
@@ -299,7 +318,7 @@ where
                 _ => LogManagerError::EventStoreError(e),
             })?;
 
-        Ok(())
+        Ok(LogState { last_index: 0 })
     }
 
     /// Reduces the events in a given log to the configured [Aggregate].
@@ -363,17 +382,14 @@ where
     /// ```
     pub async fn append(
         &self,
-        aggregation: Aggregation<A>,
+        log_id: &LogId,
+        log_state: impl Into<LogState>,
         next_event: &E,
         append_options: &AppendOptions,
-    ) -> Result<(), LogManagerError> {
+    ) -> Result<LogState, LogManagerError> {
+        let next_index = log_state.into().last_index + 1;
         self.event_store
-            .append(
-                aggregation.log_id(),
-                next_event,
-                aggregation.through_index() + 1,
-                append_options,
-            )
+            .append(log_id, next_event, next_index, append_options)
             .await
             .map_err(|e| match e {
                 // If the event index already exists, there was a concurrent append
@@ -392,7 +408,9 @@ where
                 },
                 _ => LogManagerError::EventStoreError(e),
             })?;
-        Ok(())
+        Ok(LogState {
+            last_index: next_index,
+        })
     }
 }
 
@@ -455,6 +473,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_append_many() {
+        let mgr = log_manager();
+
+        let log_id = LogId::new();
+        let mut outcome = mgr
+            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+            .await
+            .unwrap();
+
+        for _i in 0..10 {
+            outcome = mgr
+                .append(
+                    &log_id,
+                    outcome,
+                    &TestEvent::Increment,
+                    &AppendOptions::default(),
+                )
+                .await
+                .unwrap();
+        }
+
+        let agg = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(agg.aggregate().count, 11);
+    }
+
+    #[tokio::test]
     async fn cached_reduction_gets_used() {
         let (sender, mut receiver) =
             tokio::sync::mpsc::channel::<FakeAggregationCacheOp<TestAggregate>>(64);
@@ -464,7 +508,8 @@ mod tests {
         );
 
         let log_id = LogId::new();
-        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+        let outcome = mgr
+            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
 
@@ -492,7 +537,8 @@ mod tests {
         );
 
         mgr.append(
-            agg.clone(),
+            &log_id,
+            outcome,
             &TestEvent::Decrement,
             &AppendOptions::default(),
         )
@@ -557,7 +603,8 @@ mod tests {
         let mgr = log_manager();
 
         let log_id = LogId::new();
-        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+        let outcome = mgr
+            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
 
@@ -567,11 +614,8 @@ mod tests {
             ..Default::default()
         };
 
-        let agg = mgr.reduce(&log_id).await.unwrap();
-        assert_eq!(agg.through_index(), 0);
-        assert_eq!(agg.aggregate().count, 1);
-
-        mgr.append(agg, &TestEvent::Decrement, &append_options)
+        let outcome = mgr
+            .append(&log_id, outcome, &TestEvent::Decrement, &append_options)
             .await
             .unwrap();
 
@@ -580,7 +624,7 @@ mod tests {
         assert_eq!(agg.aggregate().count, 0);
 
         let result = mgr
-            .append(agg, &TestEvent::Decrement, &append_options)
+            .append(&log_id, outcome, &TestEvent::Decrement, &append_options)
             .await;
 
         assert_eq!(
@@ -602,14 +646,14 @@ mod tests {
         let mgr = log_manager();
 
         let log_id = LogId::new();
-        mgr.create(&log_id, &TestEvent::Increment, &CreateOptions::default())
+        let outcome = mgr
+            .create(&log_id, &TestEvent::Increment, &CreateOptions::default())
             .await
             .unwrap();
 
-        let agg = mgr.reduce(&log_id).await.unwrap();
-
         mgr.append(
-            agg.clone(),
+            &log_id,
+            outcome.clone(),
             &TestEvent::Decrement,
             &AppendOptions::default(),
         )
@@ -618,7 +662,8 @@ mod tests {
 
         let result = mgr
             .append(
-                agg.clone(),
+                &log_id,
+                outcome,
                 &TestEvent::Decrement,
                 &AppendOptions::default(),
             )
@@ -661,9 +706,14 @@ mod tests {
         // policy should have prohibited the aggregate from being cached
         // (will assert that below)
 
-        mgr.append(first_agg, &TestEvent::Decrement, &AppendOptions::default())
-            .await
-            .unwrap();
+        mgr.append(
+            &log_id,
+            first_agg,
+            &TestEvent::Decrement,
+            &AppendOptions::default(),
+        )
+        .await
+        .unwrap();
         let second_agg = mgr.reduce(&log_id).await.unwrap();
         assert_eq!(second_agg.log_id(), &log_id);
         assert_eq!(second_agg.through_index(), 1);

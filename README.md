@@ -83,7 +83,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // If another process is racing with this one, only one will
     // successfully append, and the other will get a ConcurrentAppend
     // error. And idempotency keys may also be provided in the AppendOptions.
-    log_manager.append(aggregation, &TestEvent::Decrement, &AppendOptions::default()).await?;
+    log_manager.append(&log_id, aggregation, &TestEvent::Decrement, &AppendOptions::default()).await?;
 
     // Re-reduce: the cached aggregate will automatically be used as
     // the starting point, so that we only have to select the events with
