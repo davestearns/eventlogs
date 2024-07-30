@@ -467,10 +467,10 @@ mod tests {
             .await
             .unwrap();
 
-        let agg = mgr.reduce(&log_id).await.unwrap();
-        assert_eq!(agg.log_id(), &log_id);
-        assert_eq!(agg.through_index(), 0);
-        assert_eq!(agg.aggregate().count, 1);
+        let reduction = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(reduction.log_id(), &log_id);
+        assert_eq!(reduction.through_index(), 0);
+        assert_eq!(reduction.aggregate().count, 1);
     }
 
     #[tokio::test]
@@ -495,8 +495,8 @@ mod tests {
                 .unwrap();
         }
 
-        let agg = mgr.reduce(&log_id).await.unwrap();
-        assert_eq!(agg.aggregate().count, 11);
+        let reduction = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(reduction.aggregate().count, 11);
     }
 
     #[tokio::test]
@@ -513,10 +513,10 @@ mod tests {
             .await
             .unwrap();
 
-        let agg = mgr.reduce(&log_id).await.unwrap();
-        assert_eq!(agg.log_id(), &log_id);
-        assert_eq!(agg.through_index(), 0);
-        assert_eq!(agg.aggregate().count, 1);
+        let first_reduction = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(first_reduction.log_id(), &log_id);
+        assert_eq!(first_reduction.through_index(), 0);
+        assert_eq!(first_reduction.aggregate().count, 1);
 
         // first op should be a Get that found nothing
         let op = receiver.recv().await.unwrap();
@@ -532,23 +532,23 @@ mod tests {
         assert_eq!(
             op,
             FakeReductionCacheOp::Put {
-                reduction: agg.clone()
+                reduction: first_reduction.clone()
             }
         );
 
         mgr.append(
             &log_id,
-            agg.clone(),
+            first_reduction.clone(),
             &TestEvent::Decrement,
             &AppendOptions::default(),
         )
         .await
         .unwrap();
 
-        let re_agg = mgr.reduce(&log_id).await.unwrap();
-        assert_eq!(re_agg.log_id(), &log_id);
-        assert_eq!(re_agg.through_index(), 1);
-        assert_eq!(re_agg.aggregate().count, 0);
+        let second_reduction = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(second_reduction.log_id(), &log_id);
+        assert_eq!(second_reduction.through_index(), 1);
+        assert_eq!(second_reduction.aggregate().count, 0);
 
         // next op should be a Get that found the previous agg
         let op = receiver.recv().await.unwrap();
@@ -556,7 +556,7 @@ mod tests {
             op,
             FakeReductionCacheOp::Get {
                 log_id: log_id.clone(),
-                response: Some(agg.clone()),
+                response: Some(first_reduction.clone()),
             }
         );
         // next op should be the put of the reduction we just got back
@@ -564,7 +564,7 @@ mod tests {
         assert_eq!(
             op,
             FakeReductionCacheOp::Put {
-                reduction: re_agg.clone()
+                reduction: second_reduction.clone()
             }
         );
     }
@@ -619,9 +619,9 @@ mod tests {
             .await
             .unwrap();
 
-        let agg = mgr.reduce(&log_id).await.unwrap();
-        assert_eq!(agg.through_index(), 1);
-        assert_eq!(agg.aggregate().count, 0);
+        let reduction = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(reduction.through_index(), 1);
+        assert_eq!(reduction.aggregate().count, 0);
 
         let result = mgr
             .append(&log_id, log_state, &TestEvent::Decrement, &append_options)
@@ -636,9 +636,9 @@ mod tests {
             })
         );
 
-        let agg = mgr.reduce(&log_id).await.unwrap();
-        assert_eq!(agg.through_index(), 1);
-        assert_eq!(agg.aggregate().count, 0);
+        let reduction = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(reduction.through_index(), 1);
+        assert_eq!(reduction.aggregate().count, 0);
     }
 
     #[tokio::test]
@@ -689,10 +689,10 @@ mod tests {
             .await
             .unwrap();
 
-        let first_agg = mgr.reduce(&log_id).await.unwrap();
-        assert_eq!(first_agg.log_id(), &log_id);
-        assert_eq!(first_agg.through_index(), 0);
-        assert_eq!(first_agg.aggregate().count, 1);
+        let first_reduction = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(first_reduction.log_id(), &log_id);
+        assert_eq!(first_reduction.through_index(), 0);
+        assert_eq!(first_reduction.aggregate().count, 1);
 
         // first op should be a Get that found nothing
         let op = receiver.recv().await.unwrap();
@@ -708,16 +708,16 @@ mod tests {
 
         mgr.append(
             &log_id,
-            first_agg,
+            first_reduction,
             &TestEvent::Decrement,
             &AppendOptions::default(),
         )
         .await
         .unwrap();
-        let second_agg = mgr.reduce(&log_id).await.unwrap();
-        assert_eq!(second_agg.log_id(), &log_id);
-        assert_eq!(second_agg.through_index(), 1);
-        assert_eq!(second_agg.aggregate().count, 0);
+        let second_reduction = mgr.reduce(&log_id).await.unwrap();
+        assert_eq!(second_reduction.log_id(), &log_id);
+        assert_eq!(second_reduction.through_index(), 1);
+        assert_eq!(second_reduction.aggregate().count, 0);
 
         // first op should be a Get that found nothing because policy prohibited caching
         let op = receiver.recv().await.unwrap();
@@ -733,7 +733,7 @@ mod tests {
         assert_eq!(
             op,
             FakeReductionCacheOp::Put {
-                reduction: second_agg.clone(),
+                reduction: second_reduction.clone(),
             }
         );
     }
