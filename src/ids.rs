@@ -100,6 +100,12 @@ impl Display for LogId {
     }
 }
 
+impl From<LogId> for String {
+    fn from(value: LogId) -> Self {
+        value.to_string()
+    }
+}
+
 /// Errors that can be returned when parsing a [LogId] from a string.
 #[derive(Debug, Error, Clone)]
 pub enum LogIdParsingError {
@@ -156,12 +162,6 @@ impl TryFrom<String> for LogId {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         FromStr::from_str(value.as_str())
-    }
-}
-
-impl From<LogId> for String {
-    fn from(value: LogId) -> Self {
-        value.to_string()
     }
 }
 
