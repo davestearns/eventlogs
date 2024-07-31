@@ -2,13 +2,13 @@
 
 [![CI](https://github.com/davestearns/eventlogs/actions/workflows/ci.yml/badge.svg)](https://github.com/davestearns/eventlogs/actions/workflows/ci.yml)
 
-This crate supports a style of transaction processing known as ["event sourcing."](https://martinfowler.com/eaaDev/EventSourcing.html) That name is rather opaque, but the basic idea is quite simple: instead of storing mutable records that get updated as state changes, event-sourcing systems store a series of immutable events recording those state changes. When the system needs to know the state of any given entity, it selects the events related to that entity and [reduces (aka folds)](https://en.wikipedia.org/wiki/Fold_(higher-order_function)) them into an "aggregate," which is the current state of that entity. That is, the current state of the transaction is actually _calculated_ from the events, as they already capture everything that happened. 
+This crate supports a style of transaction processing known as ["event sourcing."](https://martinfowler.com/eaaDev/EventSourcing.html) That name is rather opaque, but the basic idea is quite simple: instead of storing mutable records that get updated as state changes, event-sourcing systems store a series of immutable events describing those state changes. When the system needs to know the state of a given entity, it selects the events related to that entity and [reduces (aka folds)](https://en.wikipedia.org/wiki/Fold_(higher-order_function)) them into an "aggregate," which is the current state of that entity. In other words, the current state of a transaction is actually _calculated_ from the events recorded about that transaction.
 
-The aggregate can then be cached aggressively because the events it was calculated from are immutable, and new events are always append to the end of the log. A cached aggregate can be quickly updated by selecting and applying only the events that were recorded _after_ the last reduction.
+Aggregates can be cached aggressively because the events they were calculated from are immutable, and new events are always append to the end of the log. A cached aggregate can also be quickly updated by selecting and applying only the events that were recorded _after_ it was created.
 
 This approach provides not only a full audit trail for how a given entity's state ended up the way it did, but also an easy way to record events that can happen multiple times to the same entity. For example, a payment may be partially captured or refunded several times, but each of those events will have their own distinct properties for the monetary amounts and reference numbers.
 
-The drawback of this approach is that is makes listing and querying of entities more complex: if you store individual events and calculate the overall state, how do you quickly find all payments that have been fully refunded? Most event-sourcing systems handle this by sending these sorts of queries to a separate, highly-indexed database containing the aggregates. These aggregates are typically recalculated and updated asynchronously in response to new events written to the transaction-processing database, so they are eventually-consistent, but listing/querying APIs are often that way in large distributed systems. This also keeps the writes to the transaction-processing database very fast since those are just inserts to a minimally-indexed table.
+The drawback of this approach is that is makes listing and querying of entities more complex: if you store individual events and calculate the overall state, how do you quickly find all payments that have been fully refunded? Most event-sourcing systems handle this by sending these sorts of queries to a separate, highly-indexed database containing aggregate snapshots. These aggregates are typically recalculated and updated asynchronously in response to new events written to the transaction-processing database. They are eventually-consistent, but listing/querying APIs are often that way in large distributed systems. This also keeps the writes to the transaction-processing database very fast since those are just inserts to a minimally-indexed table. This division of labor is typically called ["Command and Query Responsibility Separation"](https://learn.microsoft.com/en-us/azure/architecture/patterns/cqrs) or CQRS for short.
 
 > ⚠️ **Caution:** The crate is functional and tested, but hasn't been used in production yet, so use at your own risk! If you'd like to do a pilot, create a [tracking issue](https://github.com/davestearns/eventlogs/issues) on GitHub and I'll gladly help you.
 
@@ -18,10 +18,10 @@ This is a batteries-included library that offers features one typically needs in
 
 - **Idempotency:** When creating a new log or appending an event to an existing one, the caller can include a unique `idempotency_key` that ensures the operation occurs only once, even if the request is retried. Idempotent replays will return a
 `IdempotentReplay` error with the previously-recorded `LogId` and event index, so that you can easily detect and react to them appropriately.
-- **Concurrency:** If multiple service instances attempt to append a new event to the same log at the same time, only one will win the race, and the others will receive an error. The losers can then re-reduce the log to see the effect of the new event on the aggregate, determine if their operation is still relevant, and try again.
+- **Optimistic Concurrency:** If multiple service instances attempt to append a new event to the same log at the same time, only one will win the race, and the others will receive an error. The losers can then re-reduce the log to see the effect of the new event on the aggregate, determine if their operation is still relevant, and try again.
 - **Async Aggregate Caching:** When you reduce a log, the resulting aggregate is written asynchronously to a cache like Redis. Subsequent calls to `reduce()` will reuse that cached aggregate, and only fetch/apply events that were recorded _after_ the aggregate was last calculated. This makes subsequent reductions faster without slowing down your code.
 - **Caching Policies:** Aggregates are always cached by default, but if you want to control when this occurs based on aggregate properties, you can provide an implementation of `CachingPolicy`. For example, if the state of the aggregates tells you that it will never be loaded again, you can skip caching it.
-- **Event Streaming and Paging:** When reducing, events are asynchronously streamed from the database instead of buffered to limit the amount of memory consumed. But the library also offers a method you can use to get a page of events at a time as a `Vector`, which makes it easier to return them as a JSON array from your service's API.
+- **Event Streaming and Paging:** When reducing, events are asynchronously streamed from the database instead of buffered to limit the amount of memory consumed. But the library also offers a convenience method you can use to get a page of events at a time as a `Vector`, which makes it easier to return them as a JSON array from your service's API.
 
 ## Example Usage
 ```rust
@@ -52,7 +52,7 @@ pub struct PaymentRequest {
 
 // Now let's define our events, which are typically variants in an enum.
 // Since this is just an example, we'll define only a subset with only
-// the most relevant properties. Timestamps will be added automatically
+// the most relevant properties. Timestamps are added automatically
 // by this crate, so we don't need to define them in each event.
 #[derive(Debug, PartialEq, Clone)]
 pub enum PaymentEvent {
@@ -98,7 +98,12 @@ impl Aggregate for Payment {
 
     fn apply(&mut self, event_record: &impl EventRecord<Self::Event>) {
         match event_record.event() {
-            PaymentEvent::Requested { request } => self.request = request.clone(),
+            PaymentEvent::Requested { request } => { 
+                // If you don't want to clone, you could use 
+                // std::mem::take() with a mutable `request`
+                // as the event isn't written back to the database.
+                self.request = request.clone() 
+            }
             PaymentEvent::Authorized { amount, .. } => self.amount_approved += amount,
             PaymentEvent::Captured { amount, .. } => self.amount_captured += amount,
             PaymentEvent::Refunded { amount, .. } => self.amount_refunded += amount,
@@ -119,7 +124,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     // Let's say we get an API request to create a new payment. We start
     // by creating a universally-unique log ID to track events related
-    // to this payment.
+    // to this payment. This can be serialized to a URL-safe string.
     let payment_id = LogId::new();
 
     // Then we create a new log, appending the Requested event.
@@ -150,7 +155,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // do optimistic concurrency and detect race conditions. If multiple processes try
     // to append to the same log at the same time, only one process will win, and the 
     // others will get a ConcurrentAppend error.
-    log_manager.append(&payment_id, log_state, &auth_event, &AppendOptions::default()).await?;
+    log_manager.append(
+        &payment_id, 
+        log_state, 
+        &auth_event, 
+        &AppendOptions::default()).await?;
 
     // Now let's assume we shipped one of the items in the customer's order, so 
     // we get an API request to capture some of the payment. To know if this
@@ -172,7 +181,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // concurrency to detect race conditions. The reduction is consumed here since
     // it shouldn't be treated as a current reduction after this call, regardless 
     // of the Result returned.
-    log_manager.append(&payment_id, reduction, &capture_event, &AppendOptions::default()).await?;
+    log_manager.append(
+        &payment_id, 
+        reduction, 
+        &capture_event, 
+        &AppendOptions::default()).await?;
 
     // Now if we reduce the log again, we should see the affect of the Capture.
     // This will use the cached reduction from before, and select/apply only 
@@ -190,7 +203,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         amount: 6000,
         reference_number: "abc789".to_string(),
     };
-    log_manager.append(&payment_id, reduction, &refund_event, &AppendOptions::default()).await?;
+    log_manager.append(
+        &payment_id, 
+        reduction, 
+        &refund_event, 
+        &AppendOptions::default()).await?;
 
     // When we reduce, we should see that the amount outstanding is now zero.
     let reduction = log_manager.reduce(&payment_id).await?;
