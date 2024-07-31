@@ -161,7 +161,7 @@ impl TryFrom<String> for LogId {
     type Error = LogIdParsingError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        FromStr::from_str(value.as_str())
+        value.parse()
     }
 }
 
