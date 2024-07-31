@@ -38,6 +38,7 @@ pub const DEFAULT_ENTROPY_LEN: usize = 8;
 /// # }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(into = "String", try_from = "String")]
 pub struct LogId {
     created_at: DateTime<Utc>,
     random: Vec<u8>,
@@ -150,6 +151,20 @@ impl FromStr for LogId {
     }
 }
 
+impl TryFrom<String> for LogId {
+    type Error = LogIdParsingError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        FromStr::from_str(value.as_str())
+    }
+}
+
+impl Into<String> for LogId {
+    fn into(self) -> String {
+        self.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -197,5 +212,22 @@ mod tests {
         let s = format!("{LOG_ID_PREFIX}🤓");
         let result: Result<LogId, LogIdParsingError> = s.parse::<LogId>();
         assert!(matches!(result, Err(LogIdParsingError::Decode(_))));
+    }
+
+    #[test]
+    fn serializes_as_string() {
+        let log_id = LogId::new();
+        let serialized = serde_json::to_string(&log_id).unwrap();
+        // serialized JSON strings are quoted
+        let expected = format!("\"{}\"", log_id.to_string());
+        assert_eq!(serialized, expected);
+    }
+
+    #[test]
+    fn deserializes_from_string() {
+        let log_id = LogId::new();
+        let serialized = format!("\"{}\"", log_id.to_string());
+        let deserialized: LogId = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, log_id);
     }
 }
