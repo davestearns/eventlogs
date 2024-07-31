@@ -124,7 +124,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     
     // Let's say we get an API request to create a new payment. We start
     // by creating a universally-unique log ID to track events related
-    // to this payment. This can be serialized to a URL-safe string.
+    // to this payment. This will be serialized to a URL-safe string in
+    // your API responses.
     let payment_id = LogId::new();
 
     // Then we create a new log, appending the Requested event.
