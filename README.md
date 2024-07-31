@@ -30,34 +30,78 @@ use eventlogs::{LogId, LogManager, LogManagerOptions,
     AppendOptions, Aggregate, EventRecord};
 use eventlogs::stores::fake::FakeEventStore;
 use eventlogs::caches::fake::FakeReductionCache;
+use serde::{Serialize, Deserialize};
 
-/// Events are typically defined as members of an enum.
-/// Properties for events can be defined as fields on
-/// the enum variant. In this example, we will use a very
-/// simple set of events that record credits and debits
-/// to a single-currency account (amounts are in minor units).
-#[derive(Debug, Clone)]
-pub enum BalanceEvent {
-    Credit { amount: u32 },
-    Debit { amount: u32 },
+// A typical application of event-sourcing is the tracking of payments.
+// A payment is really a series of events: authorization, increment,
+// reversal, capture, clearing, refund, dispute, etc. Most events
+// can occur several times, but each must capture distinct properties
+// (e.g., the amount refunded). The overall state of the payment can 
+// then be reduced from these events.
+
+// Let's start by defining a struct to hold the initial payment request
+// properties, which would include details about the card, cardholder,
+// amount requested, etc. 
+// To keep things simple, amounts will be tracked in minor units with an 
+// assumed single currency.
+#[derive(Debug, Default, PartialEq, Clone)]
+pub struct PaymentRequest {
+    amount_requested: isize,
+    // ... lots of other details ...
 }
 
-/// An Aggregate is a simple struct with fields that get
-/// calculated from the events recorded in the log. Note that
-/// Aggregates must implement the Aggregate and Default traits,
-/// but you can derive Default if your field types already
-/// implement Default.
-#[derive(Debug, Default, Clone)]
-pub struct Account {
-    pub balance: i64,
+// Now let's define our events, which are typically variants in an enum.
+// Since this is just an example, we'll define only a subset with only
+// the most relevant properties. Timestamps will be added automatically
+// by this crate, so we don't need to define them in each event.
+#[derive(Debug, PartialEq, Clone)]
+pub enum PaymentEvent {
+    Requested {
+        request: PaymentRequest,
+    },
+    Authorized {
+        amount: isize,
+        approval_code: Option<String>,
+    },
+    Captured {
+        amount: isize,
+        statement_descriptor: String,
+    },
+    Refunded {
+        amount: isize,
+        reference_number: String,
+    },
 }
 
-impl Aggregate for Account {
-    type Event = BalanceEvent;
+// Now let's define the "aggregate" for these events, which is the overall
+// state of the payment. This is what we will reduce from the events,
+// and use to decide if the current API request or operation is allowable.
+// Aggregates must implement/derive Default, and implement Aggregate.
+#[derive(Debug, Default, PartialEq, Clone)]
+pub struct Payment {
+    request: PaymentRequest,
+    amount_approved: isize,
+    amount_captured: isize,
+    amount_refunded: isize,
+}
+
+impl Payment {
+    pub fn amount_outstanding(&self) -> isize {
+        self.amount_approved - self.amount_captured - self.amount_refunded
+    }
+}
+
+// To make Payment an aggregate, implement the Aggregate trait, which 
+// adds a method for applying each event to the aggregate's current state.
+impl Aggregate for Payment {
+    type Event = PaymentEvent;
+
     fn apply(&mut self, event_record: &impl EventRecord<Self::Event>) {
         match event_record.event() {
-            BalanceEvent::Credit { amount } => self.balance += amount as i64,
-            BalanceEvent::Debit { amount } => self.balance -= amount as i64,
+            PaymentEvent::Requested { request } => self.request = request.clone(),
+            PaymentEvent::Authorized { amount, .. } => self.amount_approved += amount,
+            PaymentEvent::Captured { amount, .. } => self.amount_captured += amount,
+            PaymentEvent::Refunded { amount, .. } => self.amount_refunded += amount,
         }
     }
 }
@@ -69,58 +113,92 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // but you would use PostgresEventStore RedisReductionCache, configured
     // to point to your servers/clusters.
     let log_manager = LogManager::new(
-        FakeEventStore::<BalanceEvent>::new(),
-        FakeReductionCache::<Account>::new()
+        FakeEventStore::<PaymentEvent>::new(),
+        FakeReductionCache::<Payment>::new(),
     );
     
-    // Say your service gets a request to create a new account with a starting
-    // balance, but you want to ensure this happens only once, even if your 
-    // caller gets a network timeout and retries their request. This is
-    // easily supported by having your client provide a unique
-    // idempotency key in the request, and using it in the AppendOptions.
-    // If a log was already created with that same idempotency key, 
-    // in a previous request, you will get an IdempotencyReplay error 
-    // with the previously-created log ID.
-    let caller_supplied_key = uuid::Uuid::now_v7().to_string();
+    // Let's say we get an API request to create a new payment. We start
+    // by creating a universally-unique log ID to track events related
+    // to this payment.
+    let payment_id = LogId::new();
+
+    // Then we create a new log, appending the Requested event.
+    // To ensure this happens only once, even if your caller gets a network
+    // timeout and retries their API request, have them pass a universally
+    // unique idempotency key with their payment creation request. The
+    // library will use that to ensure this log gets created only once.
+    // See the LogManagerError::IdempotentReplay error for more details.
+    let idempotency_key_from_caller = uuid::Uuid::now_v7().to_string();
     let options = AppendOptions {
-        idempotency_key: Some(caller_supplied_key),
+        idempotency_key: Some(idempotency_key_from_caller),
         ..Default::default()
     };
-    let log_id = LogId::new();
-    let starting_balance_event = BalanceEvent::Credit { amount: 100 };
-    log_manager.create(&log_id, &starting_balance_event, &options).await?;
+    let req_event = PaymentEvent::Requested {
+        request: PaymentRequest { amount_requested: 10000 },
+    };
+    let log_state = log_manager.create(&payment_id, &req_event, &options).await?;
 
-    // Now let's say our service gets another API request to debit the account,
-    // but your rules say that accounts may not go negative.
-    // So we need to reduce the log for this account to check the balance
-    // before we add a the new debit event. The log_manager will also put
-    // this reduction into the cache asynchronously, so it won't slow down
-    // our code.
-    let debit_amount: u32 = 10;
-    let reduction = log_manager.reduce(&log_id).await?;
-    assert!(reduction.aggregate().balance - (debit_amount as i64) >= 0);
+    // We then talk to the payment gateway, and get an approved authorization...
+    let auth_event = PaymentEvent::Authorized {
+        amount: 10000,
+        approval_code: Some("xyz123".to_string()),
+    };
+    
+    // Append the authorized event to the log. You can use an idempotency key here
+    // as well, but if you don't want to use them, just pass AppendOptions::default().
+    // We pass the `log_state` that was returned from create() so that the library can
+    // do optimistic concurrency and detect race conditions. If multiple processes try
+    // to append to the same log at the same time, only one process will win, and the 
+    // others will get a ConcurrentAppend error.
+    log_manager.append(&payment_id, log_state, &auth_event, &AppendOptions::default()).await?;
 
-    // We could use an idempotency key here as well, but we will
-    // skip that to keep the code shorter.
-    log_manager.append(
-        &log_id,
-        reduction,
-        &BalanceEvent::Debit { amount: debit_amount }, 
-        &AppendOptions::default())
-        .await?;
+    // Now let's assume we shipped one of the items in the customer's order, so 
+    // we get an API request to capture some of the payment. To know if this
+    // is a valid request, we first reduce the log into a Payment to see if
+    // the amount_outstanding is positive. The reduction will be automatically
+    // cached asynchronously when we do this, so the next time we reduce, it
+    // will only need to fetch new events and apply them.
+    let reduction = log_manager.reduce(&payment_id).await?;
+    assert!(reduction.aggregate().amount_outstanding() > 0);
 
-    // If we reduce the log again, we will see that the balance has been
-    // debited. But this time the log_manager will read the previous
-    // reduction from the cache, and only apply the new events to it.
-    let reduction = log_manager.reduce(&log_id).await?;
-    assert_eq!(reduction.aggregate().balance, 90);
+    // Looks like we can do the capture, so let's record that event.
+    let capture_event = PaymentEvent::Captured {
+        amount: 4000,
+        statement_descriptor: "Widgets, Inc".to_string(),
+    };
 
-    // If you ever need to list all events in a given log, you can
-    // fetch them in pages using the load() method:
-    let starting_index = 0;
-    let max_events = 100;
-    let events = log_manager.load(&log_id, starting_index, max_events).await?;
-    assert_eq!(events.len(), 2);
+    // You can pass a reduction instead of a log_state as the second argument
+    // if you recently reduced the log. This again helps the library do optimistic
+    // concurrency to detect race conditions. The reduction is consumed here since
+    // it shouldn't be treated as a current reduction after this call, regardless 
+    // of the Result returned.
+    log_manager.append(&payment_id, reduction, &capture_event, &AppendOptions::default()).await?;
+
+    // Now if we reduce the log again, we should see the affect of the Capture.
+    // This will use the cached reduction from before, and select/apply only 
+    // the events that were appended after that reduction was created.
+    let reduction = log_manager.reduce(&payment_id).await?;
+    let payment = reduction.aggregate();
+    assert_eq!(payment.amount_approved, 10000);
+    assert_eq!(reduction.aggregate().amount_captured, 4000);
+    assert_eq!(reduction.aggregate().amount_refunded, 0);
+    assert_eq!(reduction.aggregate().amount_outstanding(), 6000);
+
+    // Now let's assume the customer changed their mind and canceled the other
+    // item in their order, so we need to refund that amount.
+    let refund_event = PaymentEvent::Refunded {
+        amount: 6000,
+        reference_number: "abc789".to_string(),
+    };
+    log_manager.append(&payment_id, reduction, &refund_event, &AppendOptions::default()).await?;
+
+    // When we reduce, we should see that the amount outstanding is now zero.
+    let reduction = log_manager.reduce(&payment_id).await?;
+    let payment = reduction.aggregate();
+    assert_eq!(payment.amount_approved, 10000);
+    assert_eq!(reduction.aggregate().amount_captured, 4000);
+    assert_eq!(reduction.aggregate().amount_refunded, 6000);
+    assert_eq!(reduction.aggregate().amount_outstanding(), 0);
 
     Ok(())
 }
