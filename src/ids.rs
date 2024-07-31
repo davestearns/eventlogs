@@ -159,9 +159,9 @@ impl TryFrom<String> for LogId {
     }
 }
 
-impl Into<String> for LogId {
-    fn into(self) -> String {
-        self.to_string()
+impl From<LogId> for String {
+    fn from(value: LogId) -> Self {
+        value.to_string()
     }
 }
 
