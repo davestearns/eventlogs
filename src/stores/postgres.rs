@@ -24,9 +24,9 @@ const COLUMN_LIST: &str = "log_id,event_index,recorded_at,idempotency_key,payloa
 const SELECT_EVENTS: &str = formatcp!(
     "select {COLUMN_LIST} from {QUALIFIED_TABLE_NAME} 
     where log_id = $1 and event_index >= $2
-    order by log_id, event_index
-    limit $3"
+    order by log_id, event_index"
 );
+const SELECT_EVENTS_WITH_LIMIT: &str = formatcp!("{SELECT_EVENTS} limit $3");
 const INSERT_EVENT: &str =
     formatcp!("insert into {QUALIFIED_TABLE_NAME} ({COLUMN_LIST}) values ($1,$2,$3,$4,$5)");
 const SELECT_EVENT_FOR_IDEMPOTENCY_KEY: &str =
@@ -179,13 +179,23 @@ where
         impl futures_util::Stream<Item = Result<impl EventRecord<E>, EventStoreError>>,
         EventStoreError,
     > {
+        let sql = if max_events == u32::MAX {
+            SELECT_EVENTS
+        } else {
+            SELECT_EVENTS_WITH_LIMIT
+        };
         let conn = self.pool.get().await?;
-        let stmt = conn.prepare_cached(SELECT_EVENTS).await?;
+        let stmt = conn.prepare_cached(sql).await?;
 
         let log_id_param = log_id.to_string();
+        let mut params: Vec<&(dyn ToSql + Sync)> = vec![&log_id_param, &starting_index];
+
         // for some reason postgres won't accept a u32 for a limit value
         let limit_param = max_events as i64;
-        let params: Vec<&(dyn ToSql + Sync)> = vec![&log_id_param, &starting_index, &limit_param];
+        if max_events < u32::MAX {
+            params.push(&limit_param);
+        }
+        
         let row_stream = conn.query_raw(&stmt, params).await?;
 
         Ok(row_stream.map_err(|e| EventStoreError::DatabaseError { error: Box::new(e) }))
