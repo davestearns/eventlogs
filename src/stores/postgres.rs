@@ -195,7 +195,7 @@ where
         if max_events < u32::MAX {
             params.push(&limit_param);
         }
-        
+
         let row_stream = conn.query_raw(&stmt, params).await?;
 
         Ok(row_stream.map_err(|e| EventStoreError::DatabaseError { error: Box::new(e) }))
