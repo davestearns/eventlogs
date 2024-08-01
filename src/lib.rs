@@ -126,6 +126,10 @@ pub enum LogManagerError {
         log_id: LogId,
         event_index: u32,
     },
+    /// Occurs when you attempt to append() an event to a log that already has
+    /// 4,294,967,295 events in it. This the maximum number of events per-log.
+    #[error("the log already contains the max number of events (4,294,967,295)")]
+    LogFull,
 }
 
 /// Options that can be specified when using [LogManager::append].
@@ -334,6 +338,10 @@ where
         append_options: &AppendOptions,
     ) -> Result<LogState, LogManagerError> {
         let next_index = log_state.into().next_index;
+        if next_index == u32::MAX {
+            return Err(LogManagerError::LogFull);
+        }
+
         self.event_store
             .append(log_id, event, next_index, append_options)
             .await
@@ -395,8 +403,10 @@ where
         Ok(reduction)
     }
 
-    /// Returns an asynchronous stream of [EventRecord]s from the specified log,
-    /// starting at the `starting_index`.
+    /// Returns a vector of [EventRecord]s from the specified log, starting at
+    /// the specified `starting_index`, and stopping after `max_events`. Pass
+    /// u32::MAX for max_events to get them all, but ensure you have enough
+    /// available memory to buffer all the events.
     pub async fn load<'a>(
         &'a self,
         log_id: &'a LogId,
@@ -761,5 +771,24 @@ mod tests {
                 reduction: second_reduction.clone(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn log_full() {
+        let mgr = log_manager();
+        let log_id = LogId::new();
+        let log_state = LogState {
+            next_index: u32::MAX,
+        };
+        let result = mgr
+            .append(
+                &log_id,
+                log_state,
+                &TestEvent::Increment,
+                &AppendOptions::default(),
+            )
+            .await;
+
+        assert_eq!(result, Err(LogManagerError::LogFull));
     }
 }
