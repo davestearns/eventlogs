@@ -33,8 +33,21 @@ pub trait EventRecord<E> {
     /// since clocks on different service instances using this library
     /// could be skewed.
     fn recorded_at(&self) -> DateTime<Utc>;
+    /// Returns the idempotency key that was used (if any) when appending
+    /// this event to the log.
+    fn idempotency_key(&self) -> Option<String>;
     /// Returns the event.
     fn event(&self) -> E;
+}
+
+/// Instances of this are returned from [LogManager::load] so that you can
+/// easily serialize them in your API response.
+#[derive(Debug, Clone, Serialize)]
+pub struct EventEnvelope<E> {
+    pub index: u32,
+    pub recorded_at: DateTime<Utc>,
+    pub idempotency_key: Option<String>,
+    pub event: E,
 }
 
 /// The trait that must be implemented on your aggregates.
@@ -412,14 +425,23 @@ where
         log_id: &'a LogId,
         starting_index: u32,
         max_events: u32,
-    ) -> Result<Vec<impl EventRecord<E> + 'a>, LogManagerError> {
+    ) -> Result<Vec<EventEnvelope<E>>, LogManagerError> {
         let row_stream = self
             .event_store
             .load(log_id, starting_index, max_events)
             .await?;
 
-        let events = row_stream.try_collect().await?;
-        Ok(events)
+        let event_envelopes: Vec<EventEnvelope<E>> = row_stream
+            .map_ok(|er| EventEnvelope {
+                index: er.index(),
+                recorded_at: er.recorded_at(),
+                idempotency_key: er.idempotency_key(),
+                event: er.event(),
+            })
+            .try_collect()
+            .await?;
+
+        Ok(event_envelopes)
     }
 }
 
@@ -503,8 +525,9 @@ mod tests {
         let events = mgr.load(&log_id, 0, 100).await.unwrap();
         assert_eq!(events.len(), 2);
         for (idx, evt) in events.iter().enumerate() {
-            assert_eq!(evt.index() as usize, idx);
-            assert_eq!(evt.event(), TestEvent::Increment)
+            assert_eq!(evt.index as usize, idx);
+            assert_eq!(evt.event, TestEvent::Increment);
+            assert_eq!(evt.idempotency_key, None);
         }
     }
 

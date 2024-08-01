@@ -75,6 +75,10 @@ where
         self.get("recorded_at")
     }
 
+    fn idempotency_key(&self) -> Option<String> {
+        self.get("idempotency_key")
+    }
+
     fn event(&self) -> E {
         self.get::<_, Json<E>>("payload").0
     }

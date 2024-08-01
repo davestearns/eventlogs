@@ -10,6 +10,7 @@ use tokio::sync::Mutex;
 struct InternalEventRecord<E> {
     index: u32,
     recorded_at: DateTime<Utc>,
+    idempotency_key: Option<String>,
     event: E,
 }
 
@@ -23,6 +24,10 @@ where
 
     fn recorded_at(&self) -> DateTime<Utc> {
         self.recorded_at
+    }
+
+    fn idempotency_key(&self) -> Option<String> {
+        self.idempotency_key.clone()
     }
 
     fn event(&self) -> E {
@@ -108,6 +113,7 @@ where
         let record = InternalEventRecord {
             index: event_index,
             recorded_at: Utc::now(),
+            idempotency_key: append_options.idempotency_key.clone(),
             event: event.clone(),
         };
 
