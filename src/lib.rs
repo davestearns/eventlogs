@@ -43,7 +43,7 @@ pub trait EventRecord<E> {
 /// Instances of this are returned from [LogManager::load] so that you can
 /// easily serialize them in your API response.
 #[derive(Debug, Clone, Serialize)]
-pub struct EventEnvelope<E> {
+pub struct SerializableEventRecord<E> {
     pub index: u32,
     pub recorded_at: DateTime<Utc>,
     pub idempotency_key: Option<String>,
@@ -416,23 +416,31 @@ where
         Ok(reduction)
     }
 
-    /// Returns a vector of [EventRecord]s from the specified log, starting at
-    /// the specified `starting_index`, and stopping after `max_events`. Pass
-    /// u32::MAX for max_events to get them all, but ensure you have enough
-    /// available memory to buffer all the events.
+    /// Returns a vector of [SerializableEventRecord]s from the specified log,
+    /// starting at the specified `starting_index`, and stopping after
+    /// `max_events`.
+    ///
+    /// When returning pages of events from your API, ask for one more than
+    /// your page size. If you get one more than your page size, you know
+    /// that another page exists, and you know the starting index of that
+    /// next page, which you can return to your caller so they know how
+    /// to request the next page of events.
+    ///
+    /// Pass u32::MAX for max_events to get them all,
+    /// but ensure you have enough available memory to buffer all the events.
     pub async fn load<'a>(
         &'a self,
         log_id: &'a LogId,
         starting_index: u32,
         max_events: u32,
-    ) -> Result<Vec<EventEnvelope<E>>, LogManagerError> {
+    ) -> Result<Vec<SerializableEventRecord<E>>, LogManagerError> {
         let row_stream = self
             .event_store
             .load(log_id, starting_index, max_events)
             .await?;
 
-        let event_envelopes: Vec<EventEnvelope<E>> = row_stream
-            .map_ok(|er| EventEnvelope {
+        let event_envelopes: Vec<SerializableEventRecord<E>> = row_stream
+            .map_ok(|er| SerializableEventRecord {
                 index: er.index(),
                 recorded_at: er.recorded_at(),
                 idempotency_key: er.idempotency_key(),
