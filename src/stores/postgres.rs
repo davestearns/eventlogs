@@ -95,10 +95,18 @@ where
 ///     event_index OID not null,
 ///     recorded_at timestamp with time zone not null,
 ///     idempotency_key varchar(256) null constraint idempotency_key_unique unique,
-///     payload jsonb not null,
+///     payload json not null,
 ///     primary key(log_id, event_index)
 /// );
 /// ```
+/// The `payload` column may be typed either as `json` or `jsonb`. The former will
+/// give you slightly faster insert latency, but you won't be able to do any queries
+/// directly against the database that refer to the contents of that field. A `jsonb`
+/// column has slightly slower insert latency, but you can then refer to the contents
+/// in your own SQL queries, and even index fields within the JSON. That said,
+/// indexing the JSON will slow down the inserts event more, so consider using a
+/// separate database/table for searching and filtering events.
+///
 /// The [Github repo](https://github.com/davestearns/eventlogs/tree/main/docker/postgres)
 /// contains a `Dockerfile` and `schema.sql` you can use
 /// to build a custom Postgres image with all of this pre-defined. Or run the
