@@ -41,7 +41,12 @@ pub trait EventRecord<E> {
 }
 
 /// Instances of this are returned from [LogManager::load] so that you can
-/// easily serialize them in your API response.
+/// easily serialize them in your API response. Since Serialize is defined
+/// in the serde crate, and [EventRecord] is implemented directly on the
+/// native Row type for the [EventStore]'s database API, we can't implement
+/// serialize directly on that Row type (both the trait and the type
+/// are foreign). But we can copy/transfer ownership of the values
+/// into a new type that does derive Serialize, which is this type.
 #[derive(Debug, Clone, Serialize)]
 pub struct SerializableEventRecord<E> {
     pub index: u32,
@@ -186,6 +191,7 @@ pub struct AppendOptions {
 /// future, as their types will always implement [Default].
 #[derive(Debug, Default)]
 pub struct LogManagerOptions<ACP> {
+    /// The caching policy you want to use.
     pub caching_policy: Option<ACP>,
 }
 
