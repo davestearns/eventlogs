@@ -2,6 +2,9 @@
 name = "eventlogs"
 version = "0.1.0"
 edition = "2021"
+description = "High-Performance, Batteries-Included, Event Sourcing for Rust"
+repository = "https://github.com/davestearns/eventlogs"
+keywords = ["event-sourcing", "events", "logs", "transaction-processing"]
 
 [dependencies]
 base64 = "0.22.1"
