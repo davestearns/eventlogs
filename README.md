@@ -43,7 +43,7 @@ use serde::{Serialize, Deserialize};
 // amount requested, etc. 
 // To keep things simple, amounts will be tracked in minor units with an 
 // assumed single currency.
-#[derive(Debug, Default, PartialEq, Clone)]
+#[derive(Debug, Default, PartialEq, Clone, Serialize)]
 pub struct PaymentRequest {
     amount_requested: isize,
     // ... lots of other details ...
@@ -53,7 +53,7 @@ pub struct PaymentRequest {
 // Since this is just an example, we'll define only a subset with only
 // the most relevant properties. Timestamps are added automatically
 // by this crate, so we don't need to define them in each event.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Serialize)]
 pub enum PaymentEvent {
     Requested {
         request: PaymentRequest,
@@ -76,7 +76,7 @@ pub enum PaymentEvent {
 // state of the payment. This is what we will reduce from the events,
 // and use to decide if the current API request or operation is allowable.
 // Aggregates must implement/derive Default, and implement Aggregate.
-#[derive(Debug, Default, PartialEq, Clone)]
+#[derive(Debug, Default, PartialEq, Clone, Serialize)]
 pub struct Payment {
     request: PaymentRequest,
     amount_approved: isize,
@@ -216,6 +216,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(reduction.aggregate().amount_captured, 4000);
     assert_eq!(reduction.aggregate().amount_refunded, 6000);
     assert_eq!(reduction.aggregate().amount_outstanding(), 0);
+
+    // If you want to expose the raw events to your caller or
+    // on show them on an admin page, you can get them a page 
+    // at a time from the load() method. If you ask for one more 
+    // than your page size, you'll know if there are more pages!
+    let events = log_manager.load(&payment_id, 0, 101).await?;
+    // In our case there should be only 4
+    assert_eq!(events.len(), 4);
+    let json = serde_json::to_string(&events)?;
 
     Ok(())
 }

@@ -101,6 +101,10 @@ impl<A> Reduction<A> {
         &self.aggregate
     }
 
+    /// Returns a [LogState] that can be passed to [LogManager::append].
+    /// Typically you don't need to call this directly, and can instead
+    /// just pass the Reduction itself to [LogManager::append] since
+    /// it can be converted automatically into a [LogState].
     pub fn log_state(&self) -> LogState {
         LogState {
             next_index: self.through_index + 1,
