@@ -5,7 +5,7 @@ edition = "2021"
 license = "MIT"
 description = "High-Performance, Batteries-Included, Event Sourcing for Rust"
 repository = "https://github.com/davestearns/eventlogs"
-keywords = ["event-sourcing", "events", "logs", "transaction-processing"]
+keywords = ["event-sourcing", "events", "logs"]
 
 [dependencies]
 base64 = "0.22.1"
