@@ -81,7 +81,6 @@ where
     /// If an idempotency key is provided in the options, and an event already
     /// exists with that same key, this will return an
     /// [EventStoreError::IdempotentReplay] error.
-
     async fn append(
         &self,
         log_id: &LogId,
