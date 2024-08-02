@@ -195,9 +195,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let reduction = log_manager.reduce(&payment_id).await?;
     let payment = reduction.aggregate();
     assert_eq!(payment.amount_approved, 10000);
-    assert_eq!(reduction.aggregate().amount_captured, 4000);
-    assert_eq!(reduction.aggregate().amount_refunded, 0);
-    assert_eq!(reduction.aggregate().amount_outstanding(), 6000);
+    assert_eq!(payment.amount_captured, 4000);
+    assert_eq!(payment.amount_refunded, 0);
+    assert_eq!(payment.amount_outstanding(), 6000);
 
     // Now let's assume the customer changed their mind and canceled the other
     // item in their order, so we need to refund that amount.
@@ -215,9 +215,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let reduction = log_manager.reduce(&payment_id).await?;
     let payment = reduction.aggregate();
     assert_eq!(payment.amount_approved, 10000);
-    assert_eq!(reduction.aggregate().amount_captured, 4000);
-    assert_eq!(reduction.aggregate().amount_refunded, 6000);
-    assert_eq!(reduction.aggregate().amount_outstanding(), 0);
+    assert_eq!(payment.amount_captured, 4000);
+    assert_eq!(payment.amount_refunded, 6000);
+    assert_eq!(payment.amount_outstanding(), 0);
 
     // If you want to expose the raw events to your caller or
     // on show them on an admin page, you can get them a page 
