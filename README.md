@@ -1,6 +1,8 @@
 # High-Performance, Batteries-Included, Event Sourcing for Rust
 
 [![CI](https://github.com/davestearns/eventlogs/actions/workflows/ci.yml/badge.svg)](https://github.com/davestearns/eventlogs/actions/workflows/ci.yml)
+[![Crates.io Version](https://img.shields.io/crates/v/eventlogs)](https://crates.io/crates/eventlogs)
+[![Documentation](https://docs.rs/eventlogs/badge.svg)](https://docs.rs/eventlogs)
 
 This crate supports a style of transaction processing known as ["event sourcing."](https://martinfowler.com/eaaDev/EventSourcing.html) That name is rather opaque, but the basic idea is quite simple: instead of storing mutable records that get updated as state changes, event-sourcing systems store a series of immutable events describing those state changes. When the system needs to know the state of a given entity, it selects the events related to that entity and [reduces (aka folds)](https://en.wikipedia.org/wiki/Fold_(higher-order_function)) them into an "aggregate," which is the current state of that entity. In other words, the current state of a transaction is actually _calculated_ from the events recorded about that transaction.
 
