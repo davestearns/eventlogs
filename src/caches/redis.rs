@@ -65,14 +65,14 @@ where
 
         let mut conn = self.pool.get().await?;
         if let Some(duration) = self.ttl {
-            conn.set_ex(
+            let () = conn.set_ex(
                 reduction.log_id(),
                 &serialized,
                 duration.num_seconds() as u64,
             )
             .await?;
         } else {
-            conn.set(reduction.log_id(), &serialized).await?;
+            let () = conn.set(reduction.log_id(), &serialized).await?;
         }
 
         Ok(())
@@ -82,7 +82,7 @@ where
         let mut conn = self.pool.get().await?;
 
         let maybe_bytes: Option<Vec<u8>> = if let Some(duration) = self.ttl {
-            conn.get_ex(log_id, redis::Expiry::EX(duration.num_seconds() as usize))
+            conn.get_ex(log_id, redis::Expiry::EX(duration.num_seconds() as u64))
                 .await?
         } else {
             conn.get(log_id).await?

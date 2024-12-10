@@ -67,7 +67,7 @@ impl LogAgePolicy {
     pub fn starting_at(min_age: TimeDelta) -> Self {
         Self {
             min_age,
-            max_age: TimeDelta::max_value(),
+            max_age: TimeDelta::MAX,
         }
     }
 
@@ -75,7 +75,7 @@ impl LogAgePolicy {
     /// for logs that are no more than `max_age` old.
     pub fn until(max_age: TimeDelta) -> Self {
         Self {
-            min_age: TimeDelta::min_value(),
+            min_age: TimeDelta::MIN,
             max_age,
         }
     }
